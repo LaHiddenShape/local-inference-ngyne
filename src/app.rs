@@ -58,6 +58,8 @@ pub(crate) struct App {
     /// Lowercased searchable text per conversation id, tagged with its `updated` stamp.
     pub(crate) search_cache: HashMap<u64, (u64, String)>,
     pub(crate) md_cache: egui_commonmark::CommonMarkCache,
+    /// Recently deleted conversation, its former position and when the undo bar appeared.
+    pub(crate) undo_delete: Option<(Conversation, usize, f64)>,
 }
 
 /// Upper bound for the context window we request.
@@ -69,6 +71,7 @@ const FALLBACK_NUM_CTX: u64 = 4096;
 impl App {
     pub(crate) fn new(ctx: egui::Context) -> Self {
         ctx.set_visuals(square_visuals());
+        install_fonts(&ctx);
         let (tx, rx) = mpsc::channel();
         let sink = Sink::new(tx, ctx);
         sink.probe_system();
@@ -84,6 +87,7 @@ impl App {
             sink,
             search_cache: HashMap::new(),
             md_cache: Default::default(),
+            undo_delete: None,
             selected: None,
             pulls: HashMap::new(),
             errors: HashMap::new(),
@@ -330,6 +334,7 @@ impl eframe::App for App {
             }
             self.chat(ui, rect);
             self.toast(ui, rect, now);
+            self.undo_bar(ui, rect, now);
         });
 
         self.models_window(&ctx);

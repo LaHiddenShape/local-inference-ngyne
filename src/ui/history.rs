@@ -1,8 +1,10 @@
 
-use eframe::egui::{self, Color32, RichText, Vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
 
 use crate::app::App;
 use crate::store::{self, Conversation};
+
+const UNDO_SECONDS: f64 = 5.0;
 
 impl App {
     // ---------------------------------------------------------------- history
@@ -52,13 +54,59 @@ impl App {
         }
     }
 
+    /// Deletes right away, but keeps the conversation in memory for a few
+    /// seconds so it can be restored with Undo.
     pub(crate) fn delete_conversation(&mut self, id: u64) {
-        self.conversations.retain(|c| c.id != id);
+        let Some(pos) = self.conversations.iter().position(|c| c.id == id) else { return };
+        let conv = self.conversations.remove(pos);
         if self.current == Some(id) {
             self.new_chat();
         }
+        self.undo_delete = Some((conv, pos, 0.0));
         if let Err(e) = store::save(&self.conversations) {
             self.notify(&format!("Could not save history: {e}"));
+        }
+    }
+
+    pub(crate) fn undo_delete(&mut self) {
+        if let Some((conv, pos, _)) = self.undo_delete.take() {
+            let pos = pos.min(self.conversations.len());
+            self.conversations.insert(pos, conv);
+            if let Err(e) = store::save(&self.conversations) {
+                self.notify(&format!("Could not save history: {e}"));
+            }
+        }
+    }
+
+    /// "Deleted · Undo" bar shown for a few seconds after a deletion.
+    pub(crate) fn undo_bar(&mut self, ui: &mut egui::Ui, rect: Rect, now: f64) {
+        let Some((conv, _, start)) = &mut self.undo_delete else { return };
+        if *start == 0.0 {
+            *start = now;
+        }
+        if now - *start > UNDO_SECONDS {
+            self.undo_delete = None;
+            return;
+        }
+        let title = conv.title.clone();
+        let bar = Rect::from_center_size(Pos2::new(rect.center().x, rect.bottom() - 22.0), Vec2::new(340.0, 30.0));
+        let mut undo = false;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
+            egui::Frame::new().fill(Color32::from_gray(225)).inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let short: String = title.chars().take(28).collect();
+                    ui.label(RichText::new(format!("Deleted “{short}”")).size(13.0).color(Color32::from_gray(15)));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let b = egui::Button::new(RichText::new("Undo").strong().color(Color32::from_rgb(150, 110, 20))).frame(false);
+                        if ui.add(b).clicked() {
+                            undo = true;
+                        }
+                    });
+                });
+            });
+        });
+        if undo {
+            self.undo_delete();
         }
     }
 

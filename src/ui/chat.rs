@@ -72,7 +72,7 @@ impl App {
                 rect.center() - Vec2::new(0.0, 100.0),
                 Align2::CENTER_CENTER,
                 "what's on your mind?",
-                FontId::proportional(42.0),
+                FontId::new(44.0, light_family()),
                 Color32::from_gray(235),
             );
         } else {
@@ -224,7 +224,6 @@ impl App {
                     });
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("+").color(Color32::from_gray(150)).size(16.0));
                         self.context_gauge(ui);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if self.streaming() {

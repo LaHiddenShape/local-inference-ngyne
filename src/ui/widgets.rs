@@ -45,3 +45,28 @@ pub(crate) fn shimmer_bar(ui: &mut egui::Ui, t: f32) {
         }
     }
 }
+
+/// Font family for large, thin headings (Inter Light).
+pub(crate) fn light_family() -> egui::FontFamily {
+    egui::FontFamily::Name("light".into())
+}
+
+/// Inter (SIL OFL, see assets/fonts/OFL.txt) for UI text, with egui's default
+/// fonts kept as fallback for symbols and non-Latin scripts.
+pub(crate) fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "inter".into(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/fonts/Inter-400.ttf"))),
+    );
+    fonts.font_data.insert(
+        "inter-light".into(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/fonts/Inter-300.ttf"))),
+    );
+    let proportional = fonts.families.entry(egui::FontFamily::Proportional).or_default();
+    proportional.insert(0, "inter".into());
+    let mut light = vec!["inter-light".to_string()];
+    light.extend(proportional.iter().cloned());
+    fonts.families.insert(light_family(), light);
+    ctx.set_fonts(fonts);
+}
