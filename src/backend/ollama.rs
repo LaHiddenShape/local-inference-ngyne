@@ -1,5 +1,6 @@
 //! Ollama HTTP API client (https://github.com/ollama/ollama/blob/main/docs/api.md).
 
+use crate::attach::{images, prompt_with_files};
 use std::io::{BufRead, BufReader};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
@@ -281,9 +282,18 @@ impl Backend for Ollama {
     fn chat(&self, model: &str, history: Vec<ChatMessage>, num_ctx: u64, cancel: Arc<AtomicBool>) {
         let model = model.to_string();
         self.spawn(move |me| {
-            // only role + content go to the runtime
-            let messages: Vec<_> =
-                history.iter().map(|m| json!({ "role": m.role, "content": m.content })).collect();
+            // only role, content and images go to the runtime; text files are inlined
+            let messages: Vec<_> = history
+                .iter()
+                .map(|m| {
+                    let mut msg = json!({ "role": m.role, "content": prompt_with_files(&m.content, &m.attachments) });
+                    let imgs = images(&m.attachments);
+                    if !imgs.is_empty() {
+                        msg["images"] = json!(imgs);
+                    }
+                    msg
+                })
+                .collect();
             let body = json!({
                 "model": model,
                 "messages": messages,
@@ -325,7 +335,11 @@ impl Backend for Ollama {
             let context_length = info.as_ref().and_then(|v| v["model_info"].as_object()).and_then(|o| {
                 o.iter().find(|(k, _)| k.ends_with(".context_length")).and_then(|(_, v)| v.as_u64())
             });
-            me.sink.send(Event::ModelInfo { model, context_length });
+            let vision = info
+                .as_ref()
+                .and_then(|v| v["capabilities"].as_array())
+                .is_some_and(|c| c.iter().any(|x| x == "vision"));
+            me.sink.send(Event::ModelInfo { model, context_length, vision });
         });
     }
 }

@@ -4,7 +4,7 @@ use eframe::egui::{self, Color32, RichText};
 
 use crate::app::App;
 use crate::backend::{InstalledModel, RuntimeStatus};
-use crate::catalog::{self, model_url, CATALOG};
+use crate::catalog::{self, model_url, CATALOG, UNCENSORED};
 use crate::system::{fmt_bytes, Fit, SystemInfo};
 use crate::ui::widgets::*;
 
@@ -62,7 +62,7 @@ impl App {
                         .pulls
                         .keys()
                         .chain(self.errors.keys())
-                        .filter(|k| !CATALOG.iter().any(|c| c.tag == k.as_str()))
+                        .filter(|k| !CATALOG.iter().chain(UNCENSORED).any(|c| c.tag == k.as_str()))
                         .filter(|k| !self.installed.iter().any(|m| &m.name == *k))
                         .cloned()
                         .collect();
@@ -179,7 +179,7 @@ impl App {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(c.tag).strong().size(15.0));
-                    ui.label(RichText::new(format!("{} · {:.1} GB", c.params, c.size_gb)).small().color(Color32::GRAY));
+                    ui.label(RichText::new(format!("{} · {:.1} GB · {}K context", c.params, c.size_gb, c.ctx_k)).small().color(Color32::GRAY));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if !self.probing {
                             Self::fit_badge(ui, fit);
@@ -216,6 +216,19 @@ impl App {
             let active = self.selected.as_deref() == Some(m.name.as_str());
             ui.label(RichText::new(&m.name).strong());
             ui.label(RichText::new(fmt_bytes(m.size)).small().color(Color32::GRAY));
+            // context window as reported by the runtime (fetched once per model)
+            match self.ctx_limits.get(&m.name) {
+                Some(Some(n)) => {
+                    ui.label(RichText::new(format!("{}K context", n / 1024)).small().color(Color32::GRAY));
+                }
+                Some(None) => {}
+                None => {
+                    if matches!(self.status, RuntimeStatus::Online { .. }) {
+                        self.ctx_limits.insert(m.name.clone(), None);
+                        self.backend.model_info(&m.name);
+                    }
+                }
+            }
             // already on disk: only memory matters
             if !self.probing {
                 Self::fit_badge(ui, Fit::assess(m.size, &SystemInfo { disk_free: 0, ..self.sys.clone() }));

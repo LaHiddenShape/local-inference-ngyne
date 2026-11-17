@@ -1,7 +1,9 @@
 mod app;
+mod attach;
 mod background;
 mod backend;
 mod catalog;
+mod discover;
 mod store;
 mod system;
 mod ui;

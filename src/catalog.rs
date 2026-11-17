@@ -7,6 +7,8 @@ pub struct CatalogModel {
     pub tag: &'static str,
     pub params: &'static str,
     pub size_gb: f64,
+    /// Maximum context window in thousands of tokens, as listed on ollama.com.
+    pub ctx_k: u32,
     pub description: &'static str,
 }
 
@@ -36,17 +38,33 @@ pub fn model_url(tag: &str) -> String {
 }
 
 pub const CATALOG: &[CatalogModel] = &[
-    CatalogModel { tag: "llama3.2:1b", params: "1B", size_gb: 1.3, description: "Meta. Tiny and fast, good for simple tasks." },
-    CatalogModel { tag: "llama3.2:3b", params: "3B", size_gb: 2.0, description: "Meta. Small general-purpose assistant." },
-    CatalogModel { tag: "gemma3:4b", params: "4B", size_gb: 3.3, description: "Google. Compact, multilingual, vision capable." },
-    CatalogModel { tag: "mistral:7b", params: "7B", size_gb: 4.1, description: "Mistral AI. Solid all-rounder." },
-    CatalogModel { tag: "qwen2.5:7b", params: "7B", size_gb: 4.7, description: "Alibaba. Strong at code, math and multilingual." },
-    CatalogModel { tag: "llama3.1:8b", params: "8B", size_gb: 4.9, description: "Meta. Popular general-purpose model." },
-    CatalogModel { tag: "qwen3:8b", params: "8B", size_gb: 5.2, description: "Alibaba. Hybrid thinking / non-thinking modes." },
-    CatalogModel { tag: "deepseek-r1:8b", params: "8B", size_gb: 5.2, description: "DeepSeek. Reasoning model (shows its thinking)." },
-    CatalogModel { tag: "gemma3:12b", params: "12B", size_gb: 8.1, description: "Google. Higher quality, needs a mid-range GPU." },
-    CatalogModel { tag: "qwen2.5:14b", params: "14B", size_gb: 9.0, description: "Alibaba. Larger, better reasoning and code." },
-    CatalogModel { tag: "phi4:14b", params: "14B", size_gb: 9.1, description: "Microsoft. Strong reasoning for its size." },
-    CatalogModel { tag: "gemma3:27b", params: "27B", size_gb: 17.0, description: "Google. High quality, needs 24 GB VRAM." },
-    CatalogModel { tag: "llama3.3:70b", params: "70B", size_gb: 43.0, description: "Meta. Near frontier quality, very demanding." },
+    CatalogModel { tag: "llama3.2:1b", params: "1B", size_gb: 1.3, ctx_k: 128, description: "Meta. Tiny and fast, good for simple tasks." },
+    CatalogModel { tag: "llama3.2:3b", params: "3B", size_gb: 2.0, ctx_k: 128, description: "Meta. Small general-purpose assistant." },
+    CatalogModel { tag: "gemma3:4b", params: "4B", size_gb: 3.3, ctx_k: 128, description: "Google. Compact, multilingual, vision capable." },
+    CatalogModel { tag: "mistral:7b", params: "7B", size_gb: 4.1, ctx_k: 32, description: "Mistral AI. Solid all-rounder." },
+    CatalogModel { tag: "qwen2.5:7b", params: "7B", size_gb: 4.7, ctx_k: 32, description: "Alibaba. Strong at code, math and multilingual." },
+    CatalogModel { tag: "llama3.1:8b", params: "8B", size_gb: 4.9, ctx_k: 128, description: "Meta. Popular general-purpose model." },
+    CatalogModel { tag: "qwen3:8b", params: "8B", size_gb: 5.2, ctx_k: 40, description: "Alibaba. Hybrid thinking / non-thinking modes." },
+    CatalogModel { tag: "deepseek-r1:8b", params: "8B", size_gb: 5.2, ctx_k: 128, description: "DeepSeek. Reasoning model (shows its thinking)." },
+    CatalogModel { tag: "gemma3:12b", params: "12B", size_gb: 8.1, ctx_k: 128, description: "Google. Higher quality, needs a mid-range GPU." },
+    CatalogModel { tag: "qwen2.5:14b", params: "14B", size_gb: 9.0, ctx_k: 32, description: "Alibaba. Larger, better reasoning and code." },
+    CatalogModel { tag: "phi4:14b", params: "14B", size_gb: 9.1, ctx_k: 16, description: "Microsoft. Strong reasoning for its size." },
+    CatalogModel { tag: "gemma3:27b", params: "27B", size_gb: 17.0, ctx_k: 128, description: "Google. High quality, needs 24 GB VRAM." },
+    CatalogModel { tag: "llama3.3:70b", params: "70B", size_gb: 43.0, ctx_k: 128, description: "Meta. Near frontier quality, very demanding." },
+];
+
+/// Models from the official Ollama library (ollama.com/library) fine-tuned to
+/// drop the usual refusals. Community-trained, but published and hosted by
+/// Ollama itself; third-party namespaces and Hugging Face repos are left out.
+/// Sizes are the default tags, checked on ollama.com on 2026-11-17.
+pub const UNCENSORED: &[CatalogModel] = &[
+    CatalogModel { tag: "dolphin-phi:2.7b", params: "2.7B", size_gb: 1.6, ctx_k: 2, description: "Eric Hartford. Dolphin on Microsoft Phi-2, tiny and fast." },
+    CatalogModel { tag: "llama2-uncensored:7b", params: "7B", size_gb: 3.8, ctx_k: 2, description: "George Sung & Jarrad Hope. Llama 2 retrained without guardrails." },
+    CatalogModel { tag: "wizard-vicuna-uncensored:7b", params: "7B", size_gb: 3.8, ctx_k: 2, description: "Eric Hartford. Wizard-Vicuna on Llama 2, alignment data removed." },
+    CatalogModel { tag: "dolphin-mistral:7b", params: "7B", size_gb: 4.1, ctx_k: 32, description: "Eric Hartford. Dolphin on Mistral 7B, good at code." },
+    CatalogModel { tag: "dolphin-llama3:8b", params: "8B", size_gb: 4.7, ctx_k: 8, description: "Eric Hartford. Dolphin on Llama 3, conversation and code." },
+    CatalogModel { tag: "dolphin3:8b", params: "8B", size_gb: 4.9, ctx_k: 128, description: "Eric Hartford. Dolphin 3.0 on Llama 3.1, most recent of the series." },
+    CatalogModel { tag: "wizardlm-uncensored:13b", params: "13B", size_gb: 7.4, ctx_k: 4, description: "Eric Hartford. WizardLM on Llama 2, alignment data removed." },
+    CatalogModel { tag: "everythinglm:13b", params: "13B", size_gb: 7.4, ctx_k: 16, description: "Kai Howard. Llama 2 based, 16K context, uncensored." },
+    CatalogModel { tag: "dolphin-mixtral:8x7b", params: "8x7B", size_gb: 26.0, ctx_k: 32, description: "Eric Hartford. Dolphin on Mixtral MoE, high quality, very demanding." },
 ];

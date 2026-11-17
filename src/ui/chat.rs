@@ -50,6 +50,9 @@ impl App {
                 if ui.button("Models").clicked() {
                     self.show_models = !self.show_models;
                 }
+                if ui.button("Uncensored").clicked() {
+                    self.show_uncensored = !self.show_uncensored;
+                }
                 if ui.button("System").clicked() {
                     self.show_system = !self.show_system;
                 }
@@ -64,7 +67,8 @@ impl App {
 
     pub(crate) fn chat(&mut self, ui: &mut egui::Ui, rect: Rect) {
         let panel_w = CHAT_WIDTH.min(rect.width() - 40.0);
-        let input_h = 118.0;
+        self.handle_dropped_files(ui, rect);
+        let input_h = if self.pending.is_empty() { 118.0 } else { 148.0 };
         let left = rect.center().x - panel_w / 2.0;
 
         if self.messages.is_empty() {
@@ -117,12 +121,28 @@ impl App {
                                     .inner_margin(egui::Margin::symmetric(14, 10))
                                     .show(ui, |ui| {
                                         ui.set_max_width(panel_w * 0.72);
-                                        ui.add(
-                                            egui::Label::new(RichText::new(text).color(Color32::from_gray(15)).size(15.0))
-                                                .selectable(true),
-                                        );
+                                        ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                                            if !m.attachments.is_empty() {
+                                                ui.horizontal_wrapped(|ui| {
+                                                    for a in &m.attachments {
+                                                        attachment_chip(ui, a, true);
+                                                    }
+                                                });
+                                            }
+                                            if !text.is_empty() {
+                                                ui.add(
+                                                    egui::Label::new(RichText::new(text).color(Color32::from_gray(15)).size(15.0))
+                                                        .selectable(true),
+                                                );
+                                            }
+                                        });
                                     });
                             });
+                            if m.time > 0 {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                                    ui.label(RichText::new(fmt_time(m.time)).small().monospace().color(Color32::from_gray(110)));
+                                });
+                            }
                         } else {
                             // assistant: full-width block with a thin accent bar and model name
                             let block = egui::Frame::new()
@@ -165,6 +185,9 @@ impl App {
                                     }
                                     if i == n - 1 && !streaming && ui.add(small("regenerate")).on_hover_text("Ask again with the selected model").clicked() {
                                         regenerate = true;
+                                    }
+                                    if m.time > 0 {
+                                        ui.label(RichText::new(fmt_time(m.time)).small().monospace().color(Color32::from_gray(100)));
                                     }
                                     if m.stopped {
                                         ui.label(RichText::new("· stopped").small().monospace().color(Color32::from_gray(100)));
@@ -210,7 +233,29 @@ impl App {
                         Some(m) => format!("Ask {m} anything…"),
                         None => "Download a model to start…".into(),
                     };
-                    egui::ScrollArea::vertical().max_height(input_h - 54.0).id_salt("input_scroll").show(ui, |ui| {
+                    if !self.pending.is_empty() {
+                        let mut remove = None;
+                        ui.horizontal_wrapped(|ui| {
+                            for (i, a) in self.pending.iter().enumerate() {
+                                attachment_chip(ui, a, false);
+                                if ui.small_button("×").on_hover_text("Remove").clicked() {
+                                    remove = Some(i);
+                                }
+                                ui.add_space(6.0);
+                            }
+                        });
+                        if let Some(i) = remove {
+                            self.pending.remove(i);
+                        }
+                        if self.pending.iter().any(|a| a.is_image()) && !self.selected_has_vision() {
+                            ui.label(
+                                RichText::new("This model does not accept images (try gemma3 or llava)")
+                                    .small()
+                                    .color(Color32::from_rgb(220, 90, 90)),
+                            );
+                        }
+                    }
+                    egui::ScrollArea::vertical().max_height(118.0 - 54.0).id_salt("input_scroll").show(ui, |ui| {
                         ui.add(
                             egui::TextEdit::multiline(&mut self.input)
                                 .id(input_id)
@@ -234,6 +279,13 @@ impl App {
                                 if ui.add(egui::Button::new(RichText::new("↗").size(16.0)).min_size(Vec2::new(34.0, 28.0))).clicked() {
                                     send = true;
                                 }
+                                if ui
+                                    .add(egui::Button::new(RichText::new("📎").size(15.0)).min_size(Vec2::new(34.0, 28.0)))
+                                    .on_hover_text("Attach text files or images (or drop them on the window)")
+                                    .clicked()
+                                {
+                                    self.pick_files();
+                                }
                                 ui.label(RichText::new("↵ send   ⇧↵ newline").color(Color32::from_gray(110)).size(11.0));
                             }
                         });
@@ -246,6 +298,29 @@ impl App {
         }
         if stop {
             self.stop();
+        }
+    }
+
+    /// Files dropped on the window become attachments; shows a hint while hovering.
+    fn handle_dropped_files(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let (hovering, dropped) = ui.input(|i| (!i.raw.hovered_files.is_empty(), i.raw.dropped_files.clone()));
+        if hovering {
+            ui.painter().rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(0, 0, 0, 160));
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                "Drop files to attach",
+                FontId::proportional(24.0),
+                Color32::from_gray(235),
+            );
+        }
+        let results: Vec<_> = dropped
+            .iter()
+            .filter(|f| !f.path().as_os_str().is_empty())
+            .map(|f| crate::attach::Attachment::load(f.path()))
+            .collect();
+        if !results.is_empty() {
+            self.add_attachments(results);
         }
     }
 
@@ -273,5 +348,43 @@ impl App {
             "Tokens used by this conversation / context window of the model"
         };
         resp.on_hover_text(tip);
+    }
+}
+
+/// Small label naming an attached file; `light` for use on the light user bubble.
+fn attachment_chip(ui: &mut egui::Ui, a: &crate::attach::Attachment, light: bool) {
+    let icon = if a.is_image() { "🖼" } else { "📄" };
+    let (fill, text) = if light {
+        (Color32::from_gray(200), Color32::from_gray(25))
+    } else {
+        (Color32::from_gray(45), Color32::from_gray(210))
+    };
+    egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(6, 2)).show(ui, |ui| {
+        // long file names are shortened, the full name is in the tooltip
+        let short: String = a.name.chars().take(28).collect();
+        let shown = if a.name.chars().count() > 28 { format!("{short}…") } else { short };
+        ui.label(RichText::new(format!("{icon} {shown}")).small().color(text)).on_hover_text(&a.name);
+    });
+}
+
+/// "14:32" for today, "17/11 14:32" for another day of this year, else "17/11/2025 14:32"
+/// (local time).
+fn fmt_time(secs: u64) -> String {
+    fn local(secs: u64) -> libc::tm {
+        let t = secs as libc::time_t;
+        // SAFETY: localtime_r writes only into the provided struct.
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        unsafe { libc::localtime_r(&t, &mut tm) };
+        tm
+    }
+    let tm = local(secs);
+    let now = local(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
+    let hm = format!("{:02}:{:02}", tm.tm_hour, tm.tm_min);
+    if tm.tm_year == now.tm_year && tm.tm_yday == now.tm_yday {
+        hm
+    } else if tm.tm_year == now.tm_year {
+        format!("{:02}/{:02} {hm}", tm.tm_mday, tm.tm_mon + 1)
+    } else {
+        format!("{:02}/{:02}/{} {hm}", tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900)
     }
 }

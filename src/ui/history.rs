@@ -189,13 +189,17 @@ impl App {
                 for c in list.iter() {
                     let active = self.current == Some(c.id);
                     ui.horizontal(|ui| {
-                        let w = ui.available_width() - 48.0;
-                        let resp = ui.add_enabled(
-                            !streaming,
-                            egui::Button::selectable(active, RichText::new(&c.title).size(13.0))
-                                .min_size(Vec2::new(w, 26.0))
-                                .truncate(),
-                        );
+                        // fixed width so long titles are cut with "…" instead of
+                        // pushing the pin / delete buttons out of the panel
+                        let w = (ui.available_width() - 48.0).max(40.0);
+                        let resp = ui
+                            .add_enabled_ui(!streaming, |ui| {
+                                ui.add_sized(
+                                    Vec2::new(w, 26.0),
+                                    egui::Button::selectable(active, RichText::new(&c.title).size(13.0)).truncate(),
+                                )
+                            })
+                            .inner;
                         if resp.clicked() {
                             open = Some(c.id);
                         }

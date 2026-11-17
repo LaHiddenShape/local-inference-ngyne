@@ -36,11 +36,25 @@ pub struct ChatMessage {
     /// The reply was interrupted with Stop.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stopped: bool,
+    /// Files attached to a user message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::attach::Attachment>,
+    /// When the message was written, in Unix seconds (0 for old history).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub time: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl ChatMessage {
     pub fn new(role: &str, content: impl Into<String>) -> Self {
-        Self { role: role.into(), content: content.into(), ..Default::default() }
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Self { role: role.into(), content: content.into(), time, ..Default::default() }
     }
 }
 
@@ -61,8 +75,14 @@ pub enum Event {
     ChatDone { error: Option<String>, usage: Option<Usage> },
     /// Result of a background hardware probe.
     System(Box<crate::system::SystemInfo>),
-    /// Maximum context length supported by a model.
-    ModelInfo { model: String, context_length: Option<u64> },
+    /// Maximum context length supported by a model, and whether it accepts images.
+    ModelInfo { model: String, context_length: Option<u64>, vision: bool },
+    /// Files picked in the file dialog, loaded in the background.
+    Attached(Vec<Result<crate::attach::Attachment, String>>),
+    /// Uncensored models listed on ollama.com.
+    Discovered(Result<Vec<crate::discover::RemoteModel>, String>),
+    /// Registry details of one model tag.
+    RemoteDetails { tag: String, result: Result<crate::discover::Details, String> },
 }
 
 /// Channel to the UI that also wakes it up.
