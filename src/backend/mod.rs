@@ -59,6 +59,8 @@ pub enum Event {
     Deleted { model: String, error: Option<String> },
     ChatToken(String),
     ChatDone { error: Option<String>, usage: Option<Usage> },
+    /// Result of a background hardware probe.
+    System(Box<crate::system::SystemInfo>),
     /// Maximum context length supported by a model.
     ModelInfo { model: String, context_length: Option<u64> },
 }
@@ -71,6 +73,13 @@ pub struct Sink {
 }
 
 impl Sink {
+    /// Probes the hardware on a background thread (nvidia-smi / lspci can take
+    /// a moment) and reports it as [`Event::System`].
+    pub fn probe_system(&self) {
+        let me = self.clone();
+        std::thread::spawn(move || me.send(Event::System(Box::new(crate::system::SystemInfo::probe()))));
+    }
+
     pub fn new(tx: Sender<Event>, ctx: egui::Context) -> Self {
         Self { tx, ctx }
     }

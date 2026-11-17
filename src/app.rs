@@ -52,6 +52,11 @@ pub(crate) struct App {
     /// Token usage of the last reply in the current chat.
     pub(crate) usage: Option<Usage>,
     pub(crate) settings: store::Settings,
+    /// Hardware probe running in the background.
+    pub(crate) probing: bool,
+    pub(crate) sink: Sink,
+    /// Lowercased searchable text per conversation id, tagged with its `updated` stamp.
+    pub(crate) search_cache: HashMap<u64, (u64, String)>,
 }
 
 /// Upper bound for the context window we request.
@@ -64,14 +69,19 @@ impl App {
     pub(crate) fn new(ctx: egui::Context) -> Self {
         ctx.set_visuals(square_visuals());
         let (tx, rx) = mpsc::channel();
-        let backend = Ollama::new(&url_from_env(), Sink::new(tx, ctx));
+        let sink = Sink::new(tx, ctx);
+        sink.probe_system();
+        let backend = Ollama::new(&url_from_env(), sink.clone());
         backend.ensure_running();
         Self {
             backend: Box::new(backend),
             rx,
             status: RuntimeStatus::Checking,
             installed: Vec::new(),
-            sys: SystemInfo::probe(),
+            sys: SystemInfo::default(),
+            probing: true,
+            sink,
+            search_cache: HashMap::new(),
             selected: None,
             pulls: HashMap::new(),
             errors: HashMap::new(),
@@ -142,7 +152,7 @@ impl App {
                             if self.selected.is_none() {
                                 self.selected = Some(model);
                             }
-                            self.sys = SystemInfo::probe(); // disk space changed
+                            self.refresh_system(); // disk space changed
                         }
                     }
                 }
@@ -150,7 +160,7 @@ impl App {
                     if let Some(e) = error {
                         self.errors.insert(model, e);
                     } else {
-                        self.sys = SystemInfo::probe();
+                        self.refresh_system();
                     }
                 }
                 Event::ChatToken(tok) => {
@@ -170,6 +180,10 @@ impl App {
                         self.usage = usage;
                     }
                     self.persist();
+                }
+                Event::System(info) => {
+                    self.sys = *info;
+                    self.probing = false;
                 }
                 Event::ModelInfo { model, context_length } => {
                     self.ctx_limits.insert(model, context_length);
@@ -232,6 +246,13 @@ impl App {
         }
     }
 
+    pub(crate) fn refresh_system(&mut self) {
+        if !self.probing {
+            self.probing = true;
+            self.sink.probe_system();
+        }
+    }
+
     pub(crate) fn stop(&mut self) {
         if let Some(c) = &self.chat_cancel {
             c.store(true, Ordering::Relaxed);
@@ -261,7 +282,13 @@ impl eframe::App for App {
             let _ = store::save_settings(&self.settings);
         }
         let now = ctx.input(|i| i.time);
-        ctx.request_repaint();
+        // background animation: ~20 fps is enough; streaming events and user
+        // input trigger extra repaints on their own
+        if self.streaming() {
+            ctx.request_repaint(); // keep the loading shimmer smooth
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
 
         let mut history_open = self.show_history;
         egui::Panel::left("history")

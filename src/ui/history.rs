@@ -102,10 +102,23 @@ impl App {
         }
 
         let query = self.history_query.trim().to_lowercase();
+        if !query.is_empty() {
+            // (re)build the lowercase text only for conversations that changed
+            for c in &self.conversations {
+                let fresh = self.search_cache.get(&c.id).is_some_and(|(u, _)| *u == c.updated);
+                if !fresh {
+                    let mut text = c.title.to_lowercase();
+                    for m in &c.messages {
+                        text.push('\n');
+                        text.push_str(&m.content.to_lowercase());
+                    }
+                    self.search_cache.insert(c.id, (c.updated, text));
+                }
+            }
+        }
+        let cache = &self.search_cache;
         let matches = |c: &Conversation| {
-            query.is_empty()
-                || c.title.to_lowercase().contains(&query)
-                || c.messages.iter().any(|m| m.content.to_lowercase().contains(&query))
+            query.is_empty() || cache.get(&c.id).is_some_and(|(_, t)| t.contains(&query))
         };
         let pinned: Vec<&Conversation> = self.conversations.iter().filter(|c| c.pinned && matches(c)).collect();
         let others: Vec<&Conversation> = self.conversations.iter().filter(|c| !c.pinned && matches(c)).collect();

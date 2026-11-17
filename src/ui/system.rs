@@ -2,7 +2,7 @@
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, RichText, Vec2};
 
 use crate::app::App;
-use crate::system::{fmt_bytes, SystemInfo};
+use crate::system::fmt_bytes;
 
 impl App {
     // ----------------------------------------------------------------- system
@@ -46,7 +46,7 @@ impl App {
                     .color(Color32::GRAY),
                 );
                 if ui.button("Refresh").clicked() {
-                    self.sys = SystemInfo::probe();
+                    self.refresh_system();
                 }
             });
         self.show_system = open;

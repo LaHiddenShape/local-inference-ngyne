@@ -48,7 +48,7 @@ impl App {
                         ui.heading("Installed");
                         if ui.small_button("⟳ Refresh").on_hover_text("Reload the list from Ollama").clicked() {
                             self.backend.refresh_models();
-                            self.sys = SystemInfo::probe();
+                            self.refresh_system();
                         }
                     });
                     if self.installed.is_empty() {
@@ -115,6 +115,10 @@ impl App {
 
     pub(crate) fn system_summary(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
+            if self.probing {
+                ui.label(RichText::new("Probing hardware…").small().color(Color32::GRAY));
+                return;
+            }
             let s = &self.sys;
             let gpu = match s.gpus.iter().find(|g| g.vram.is_some()) {
                 Some(g) => format!("{} ({})", g.name, fmt_bytes(g.vram.unwrap_or(0))),
@@ -177,7 +181,9 @@ impl App {
                     ui.label(RichText::new(c.tag).strong().size(15.0));
                     ui.label(RichText::new(format!("{} · {:.1} GB", c.params, c.size_gb)).small().color(Color32::GRAY));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        Self::fit_badge(ui, fit);
+                        if !self.probing {
+                            Self::fit_badge(ui, fit);
+                        }
                     });
                 });
                 ui.label(RichText::new(c.description).color(Color32::from_gray(190)));
@@ -211,7 +217,9 @@ impl App {
             ui.label(RichText::new(&m.name).strong());
             ui.label(RichText::new(fmt_bytes(m.size)).small().color(Color32::GRAY));
             // already on disk: only memory matters
-            Self::fit_badge(ui, Fit::assess(m.size, &SystemInfo { disk_free: 0, ..self.sys.clone() }));
+            if !self.probing {
+                Self::fit_badge(ui, Fit::assess(m.size, &SystemInfo { disk_free: 0, ..self.sys.clone() }));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if self.confirm_delete.as_deref() == Some(m.name.as_str()) {
                     if ui.button("Cancel").clicked() {
