@@ -1,6 +1,7 @@
 //! Ollama HTTP API client (https://github.com/ollama/ollama/blob/main/docs/api.md).
 
 use std::io::{BufRead, BufReader};
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,13 +16,26 @@ use super::{Backend, ChatMessage, Event, InstalledModel, RuntimeStatus, Sink};
 
 pub const DEFAULT_URL: &str = "http://127.0.0.1:11434";
 
-#[derive(Clone)]
 pub struct Ollama {
     base: String,
     http: Client,
     sink: Sink,
     /// `ollama serve` process spawned by us, if any (killed on exit).
     child: Arc<Mutex<Option<Child>>>,
+    /// Only the instance owned by the app (not worker-thread clones) stops the server.
+    owner: bool,
+}
+
+impl Clone for Ollama {
+    fn clone(&self) -> Self {
+        Self {
+            base: self.base.clone(),
+            http: self.http.clone(),
+            sink: self.sink.clone(),
+            child: self.child.clone(),
+            owner: false,
+        }
+    }
 }
 
 impl Ollama {
@@ -31,7 +45,7 @@ impl Ollama {
             .connect_timeout(Duration::from_secs(3))
             .build()
             .expect("http client");
-        Self { base: base.trim_end_matches('/').to_string(), http, sink, child: Arc::default() }
+        Self { base: base.trim_end_matches('/').to_string(), http, sink, child: Arc::default(), owner: true }
     }
 
     fn url(&self, path: &str) -> String {
@@ -134,12 +148,19 @@ impl Backend for Ollama {
                 return;
             }
             // not reachable: try to start it ourselves
-            let child = Command::new("ollama")
-                .arg("serve")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn();
+            let mut cmd = Command::new("ollama");
+            cmd.arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            // Linux: have the kernel stop the server if this app dies (even on a crash)
+            // SAFETY: prctl is async-signal-safe and touches no shared state.
+            unsafe {
+                cmd.pre_exec(|| {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let child = cmd.spawn();
             match child {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     me.sink.send(Event::Status(RuntimeStatus::NotInstalled));
@@ -154,18 +175,28 @@ impl Backend for Ollama {
             me.sink.send(Event::Status(RuntimeStatus::Starting));
             let start = Instant::now();
             let mut last_err = String::new();
+            let mut online = false;
             while start.elapsed() < Duration::from_secs(20) {
                 match me.version() {
                     Ok(version) => {
                         me.sink.send(Event::Status(RuntimeStatus::Online { version }));
                         me.refresh_models();
-                        return;
+                        online = true;
+                        break;
                     }
                     Err(e) => last_err = e,
                 }
                 thread::sleep(Duration::from_millis(300));
             }
-            me.sink.send(Event::Status(RuntimeStatus::Offline { error: last_err }));
+            if !online {
+                me.sink.send(Event::Status(RuntimeStatus::Offline { error: last_err }));
+            }
+            // PR_SET_PDEATHSIG fires when the *spawning thread* exits, so this
+            // thread must outlive the server.
+            drop(me);
+            loop {
+                thread::park();
+            }
         });
     }
 
@@ -236,8 +267,7 @@ impl Backend for Ollama {
 
 impl Drop for Ollama {
     fn drop(&mut self) {
-        // only the last clone (owned by the app) stops the server we started
-        if Arc::strong_count(&self.child) == 1 {
+        if self.owner {
             if let Some(mut c) = self.child.lock().unwrap().take() {
                 let _ = c.kill();
                 let _ = c.wait();
@@ -276,5 +306,28 @@ mod tests {
         }
         println!("{} -> {out:?}", smallest.name);
         assert!(!out.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod spawn_tests {
+    use super::*;
+
+    /// Uses a fake `ollama` script from FAKE_OLLAMA_DIR: checks the spawned
+    /// server survives its spawning thread and dies with the app.
+    #[test]
+    #[ignore]
+    fn spawned_server_lives_until_app_drop() {
+        let dir = std::env::var("FAKE_OLLAMA_DIR").unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let o = Ollama::new("http://127.0.0.1:1", Sink::new(tx, eframe::egui::Context::default()));
+        o.ensure_running();
+        thread::sleep(Duration::from_secs(2));
+        let pid = std::fs::read_to_string(format!("{dir}/pid")).unwrap().trim().to_string();
+        assert!(std::path::Path::new(&format!("/proc/{pid}")).exists(), "server died too early");
+        drop(o);
+        thread::sleep(Duration::from_millis(300));
+        let alive = std::fs::read_to_string(format!("/proc/{pid}/stat")).map(|s| !s.contains(") Z")).unwrap_or(false);
+        assert!(!alive, "server still running after drop");
     }
 }
