@@ -35,11 +35,17 @@ impl App {
         self.stop();
         self.messages.clear();
         self.current = None;
+        self.usage = None;
     }
 
     pub(crate) fn open_conversation(&mut self, id: u64) {
         let Some(c) = self.conversations.iter().find(|c| c.id == id).cloned() else { return };
         self.messages = c.messages;
+        // older files have no per-message model: fall back to the conversation's
+        for m in self.messages.iter_mut().filter(|m| m.role == "assistant" && m.model.is_none()) {
+            m.model = Some(c.model.clone());
+        }
+        self.usage = None;
         self.current = Some(id);
         if self.installed.iter().any(|m| m.name == c.model) {
             self.selected = Some(c.model);

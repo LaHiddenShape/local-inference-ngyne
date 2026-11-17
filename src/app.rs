@@ -7,7 +7,7 @@ use eframe::egui::{self, Color32, Rect, RichText, Vec2};
 
 use crate::background::draw_background;
 use crate::backend::ollama::{Ollama, DEFAULT_URL};
-use crate::backend::{Backend, ChatMessage, Event, InstalledModel, RuntimeStatus, Sink};
+use crate::backend::{Usage, Backend, ChatMessage, Event, InstalledModel, RuntimeStatus, Sink};
 use crate::store::{self, Conversation};
 use crate::system::SystemInfo;
 use crate::ui::widgets::*;
@@ -47,7 +47,16 @@ pub(crate) struct App {
     pub(crate) history_query: String,
     /// Used to detect when the Models window gets opened.
     pub(crate) models_was_open: bool,
+    /// Context length per model (`None` while unknown / being fetched).
+    pub(crate) ctx_limits: HashMap<String, Option<u64>>,
+    /// Token usage of the last reply in the current chat.
+    pub(crate) usage: Option<Usage>,
 }
+
+/// Upper bound for the context window we request.
+const MAX_NUM_CTX: u64 = 8192;
+/// Used until the model's real limit is known.
+const FALLBACK_NUM_CTX: u64 = 4096;
 
 
 impl App {
@@ -78,6 +87,8 @@ impl App {
             show_history: false,
             history_query: String::new(),
             models_was_open: false,
+            ctx_limits: HashMap::new(),
+            usage: None,
         }
     }
 
@@ -143,12 +154,21 @@ impl App {
                         last.content.push_str(&tok);
                     }
                 }
-                Event::ChatDone { error } => {
-                    self.chat_cancel = None;
-                    if let (Some(e), Some(last)) = (error, self.messages.last_mut()) {
-                        last.content.push_str(&format!("\n\n[error: {e}]"));
+                Event::ChatDone { error, usage } => {
+                    let stopped = self.chat_cancel.take().is_some_and(|c| c.load(Ordering::Relaxed));
+                    if let Some(last) = self.messages.last_mut() {
+                        last.stopped = stopped;
+                        if let Some(e) = error {
+                            last.content.push_str(&format!("\n\n[error: {e}]"));
+                        }
+                    }
+                    if usage.is_some() {
+                        self.usage = usage;
                     }
                     self.persist();
+                }
+                Event::ModelInfo { model, context_length } => {
+                    self.ctx_limits.insert(model, context_length);
                 }
             }
         }
@@ -179,13 +199,33 @@ impl App {
             return;
         };
         self.input.clear();
-        self.messages.push(ChatMessage { role: "user".into(), content: text });
+        self.messages.push(ChatMessage::new("user", text));
         let history = self.messages.clone();
-        self.messages.push(ChatMessage { role: "assistant".into(), content: String::new() });
+        self.messages.push(ChatMessage { model: Some(model.clone()), ..ChatMessage::new("assistant", "") });
         let cancel = Arc::new(AtomicBool::new(false));
         self.chat_cancel = Some(cancel.clone());
         self.persist();
-        self.backend.chat(&model, history, cancel);
+        let num_ctx = self.num_ctx(&model);
+        self.backend.chat(&model, history, num_ctx, cancel);
+    }
+
+    /// Context window to request: the model's maximum, capped to keep memory
+    /// use reasonable on consumer GPUs.
+    pub(crate) fn num_ctx(&self, model: &str) -> u64 {
+        match self.ctx_limits.get(model) {
+            Some(Some(max)) => (*max).min(MAX_NUM_CTX),
+            _ => FALLBACK_NUM_CTX,
+        }
+    }
+
+    /// Asks the runtime for the selected model's context length (once per model).
+    pub(crate) fn ensure_model_info(&mut self) {
+        if let Some(m) = &self.selected {
+            if !self.ctx_limits.contains_key(m) && matches!(self.status, RuntimeStatus::Online { .. }) {
+                self.ctx_limits.insert(m.clone(), None);
+                self.backend.model_info(m);
+            }
+        }
     }
 
     pub(crate) fn stop(&mut self) {
@@ -210,6 +250,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_events();
+        self.ensure_model_info();
         let now = ctx.input(|i| i.time);
         ctx.request_repaint();
 

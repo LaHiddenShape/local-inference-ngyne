@@ -32,14 +32,20 @@ impl App {
 
                 ui.add_space(12.0);
                 let label = self.selected.clone().unwrap_or_else(|| "no model".into());
-                egui::ComboBox::from_id_salt("model_select")
-                    .selected_text(label)
-                    .width(170.0)
-                    .show_ui(ui, |ui| {
-                        for m in &self.installed {
-                            ui.selectable_value(&mut self.selected, Some(m.name.clone()), &m.name);
-                        }
-                    });
+                // locked while a reply is streaming so it is attributed to the right model
+                let streaming = self.streaming();
+                ui.add_enabled_ui(!streaming, |ui| {
+                    egui::ComboBox::from_id_salt("model_select")
+                        .selected_text(label)
+                        .width(170.0)
+                        .show_ui(ui, |ui| {
+                            for m in &self.installed {
+                                ui.selectable_value(&mut self.selected, Some(m.name.clone()), &m.name);
+                            }
+                        });
+                })
+                .response
+                .on_disabled_hover_text("Wait for the reply to finish");
 
                 if ui.button("Models").clicked() {
                     self.show_models = !self.show_models;
@@ -76,12 +82,29 @@ impl App {
             );
             let streaming = self.streaming();
             let n = self.messages.len();
-            let model = self.selected.clone().unwrap_or_default();
+            let fallback_model = self.selected.clone().unwrap_or_default();
             let now = ui.input(|i| i.time) as f32;
             ui.scope_builder(egui::UiBuilder::new().max_rect(hist), |ui| {
                 egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink(false).show(ui, |ui| {
                     ui.set_width(panel_w - 12.0); // room for the scrollbar
+                    let mut prev_model: Option<&str> = None;
                     for (i, m) in self.messages.iter().enumerate() {
+                        let model = m.model.as_deref().unwrap_or(&fallback_model);
+                        if m.role == "assistant" {
+                            // mark a model switch inside the conversation
+                            if prev_model.is_some_and(|p| p != model) {
+                                ui.vertical_centered(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("— switched to {model} —"))
+                                            .small()
+                                            .monospace()
+                                            .color(Color32::from_gray(110)),
+                                    );
+                                });
+                                ui.add_space(10.0);
+                            }
+                            prev_model = Some(model);
+                        }
                         let waiting = m.content.is_empty() && streaming && i == n - 1;
                         let text = m.content.clone();
                         if m.role == "user" {
@@ -106,7 +129,7 @@ impl App {
                                 .inner_margin(egui::Margin { left: 16, right: 14, top: 10, bottom: 12 })
                                 .show(ui, |ui| {
                                     ui.set_width(ui.available_width());
-                                    ui.label(RichText::new(&model).small().monospace().color(Color32::from_gray(120)));
+                                    ui.label(RichText::new(model).small().monospace().color(Color32::from_gray(120)));
                                     ui.add_space(2.0);
                                     if waiting {
                                         shimmer_bar(ui, now);
@@ -124,6 +147,9 @@ impl App {
                                 0.0,
                                 Color32::from_rgb(205, 165, 70),
                             );
+                            if m.stopped {
+                                ui.label(RichText::new("stopped").small().monospace().color(Color32::from_gray(100)));
+                            }
                         }
                         ui.add_space(14.0);
                     }
@@ -171,6 +197,7 @@ impl App {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("+").color(Color32::from_gray(150)).size(16.0));
+                        self.context_gauge(ui);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if self.streaming() {
                                 if ui.add(egui::Button::new("■ Stop").min_size(Vec2::new(64.0, 28.0))).clicked() {
@@ -193,5 +220,31 @@ impl App {
         if stop {
             self.stop();
         }
+    }
+
+    /// Tokens used by the conversation vs. the context window of the model.
+    fn context_gauge(&self, ui: &mut egui::Ui) {
+        let (Some(usage), Some(model)) = (self.usage, self.selected.as_deref()) else { return };
+        let limit = self.num_ctx(model);
+        let used = usage.prompt_tokens + usage.completion_tokens;
+        let frac = (used as f32 / limit as f32).clamp(0.0, 1.0);
+        let color = if frac > 0.9 {
+            Color32::from_rgb(220, 90, 90)
+        } else if frac > 0.75 {
+            Color32::from_rgb(220, 180, 60)
+        } else {
+            Color32::from_gray(110)
+        };
+        let (r, resp) = ui.allocate_exact_size(Vec2::new(60.0, 4.0), egui::Sense::hover());
+        ui.painter().rect_filled(r, 0.0, Color32::from_gray(40));
+        ui.painter().rect_filled(Rect::from_min_size(r.min, Vec2::new(r.width() * frac, r.height())), 0.0, color);
+        let k = |n: u64| if n >= 1000 { format!("{:.1}k", n as f32 / 1000.0) } else { n.to_string() };
+        ui.label(RichText::new(format!("{} / {}", k(used), k(limit))).small().monospace().color(color));
+        let tip = if frac > 0.9 {
+            "Context almost full: the oldest messages will be dropped by the model. Start a new chat."
+        } else {
+            "Tokens used by this conversation / context window of the model"
+        };
+        resp.on_hover_text(tip);
     }
 }

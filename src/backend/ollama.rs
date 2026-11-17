@@ -12,7 +12,7 @@ use reqwest::blocking::Client;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{Backend, ChatMessage, Event, InstalledModel, RuntimeStatus, Sink};
+use super::{Backend, ChatMessage, Event, InstalledModel, RuntimeStatus, Sink, Usage};
 
 pub const DEFAULT_URL: &str = "http://127.0.0.1:11434";
 
@@ -248,19 +248,54 @@ impl Backend for Ollama {
         });
     }
 
-    fn chat(&self, model: &str, history: Vec<ChatMessage>, cancel: Arc<AtomicBool>) {
+    fn chat(&self, model: &str, history: Vec<ChatMessage>, num_ctx: u64, cancel: Arc<AtomicBool>) {
         let model = model.to_string();
         self.spawn(move |me| {
-            let body = json!({ "model": model, "messages": history, "stream": true });
+            // only role + content go to the runtime
+            let messages: Vec<_> =
+                history.iter().map(|m| json!({ "role": m.role, "content": m.content })).collect();
+            let body = json!({
+                "model": model,
+                "messages": messages,
+                "stream": true,
+                "options": { "num_ctx": num_ctx },
+            });
+            let mut usage = None;
             let res = me.stream("/api/chat", body, &cancel, |v| {
                 if let Some(tok) = v["message"]["content"].as_str() {
                     if !tok.is_empty() {
                         me.sink.send(Event::ChatToken(tok.to_string()));
                     }
                 }
-                Ok(!v["done"].as_bool().unwrap_or(false))
+                let done = v["done"].as_bool().unwrap_or(false);
+                if done {
+                    usage = Some(Usage {
+                        prompt_tokens: v["prompt_eval_count"].as_u64().unwrap_or(0),
+                        completion_tokens: v["eval_count"].as_u64().unwrap_or(0),
+                    });
+                }
+                Ok(!done)
             });
-            me.sink.send(Event::ChatDone { error: res.err() });
+            me.sink.send(Event::ChatDone { error: res.err(), usage });
+        });
+    }
+
+    fn model_info(&self, model: &str) {
+        let model = model.to_string();
+        self.spawn(move |me| {
+            let info: Option<serde_json::Value> = me
+                .http
+                .post(me.url("/api/show"))
+                .json(&json!({ "model": model }))
+                .send()
+                .and_then(|r| r.error_for_status())
+                .and_then(|r| r.json())
+                .ok();
+            // key is "<architecture>.context_length", e.g. "llama.context_length"
+            let context_length = info.as_ref().and_then(|v| v["model_info"].as_object()).and_then(|o| {
+                o.iter().find(|(k, _)| k.ends_with(".context_length")).and_then(|(_, v)| v.as_u64())
+            });
+            me.sink.send(Event::ModelInfo { model, context_length });
         });
     }
 }
@@ -291,20 +326,29 @@ mod tests {
         let models = o.list_models().expect("list");
         println!("installed: {:?}", models.iter().map(|m| &m.name).collect::<Vec<_>>());
         let smallest = models.iter().min_by_key(|m| m.size).expect("no model installed");
-        let msg = ChatMessage { role: "user".into(), content: "Reply with one word: hello".into() };
-        o.chat(&smallest.name, vec![msg], Arc::new(AtomicBool::new(false)));
+        let msg = ChatMessage::new("user", "Reply with one word: hello");
+        o.chat(&smallest.name, vec![msg], 4096, Arc::new(AtomicBool::new(false)));
         let mut out = String::new();
         loop {
             match rx.recv_timeout(Duration::from_secs(120)).expect("timeout") {
                 Event::ChatToken(t) => out.push_str(&t),
-                Event::ChatDone { error } => {
+                Event::ChatDone { error, usage } => {
                     assert!(error.is_none(), "{error:?}");
+                    println!("usage: {usage:?}");
                     break;
                 }
                 _ => {}
             }
         }
         println!("{} -> {out:?}", smallest.name);
+        o.model_info(&smallest.name);
+        match rx.recv_timeout(Duration::from_secs(10)).expect("timeout") {
+            Event::ModelInfo { context_length, .. } => {
+                println!("context_length: {context_length:?}");
+                assert!(context_length.is_some());
+            }
+            _ => panic!("unexpected event"),
+        }
         assert!(!out.is_empty());
     }
 }

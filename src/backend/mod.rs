@@ -25,10 +25,30 @@ pub struct InstalledModel {
     pub size: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    /// Model that wrote this reply (assistant messages only). Kept in the
+    /// history file, never sent to the runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The reply was interrupted with Stop.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopped: bool,
+}
+
+impl ChatMessage {
+    pub fn new(role: &str, content: impl Into<String>) -> Self {
+        Self { role: role.into(), content: content.into(), ..Default::default() }
+    }
+}
+
+/// Token usage reported by the runtime at the end of a reply.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Usage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
 }
 
 pub enum Event {
@@ -38,7 +58,9 @@ pub enum Event {
     PullDone { model: String, error: Option<String> },
     Deleted { model: String, error: Option<String> },
     ChatToken(String),
-    ChatDone { error: Option<String> },
+    ChatDone { error: Option<String>, usage: Option<Usage> },
+    /// Maximum context length supported by a model.
+    ModelInfo { model: String, context_length: Option<u64> },
 }
 
 /// Channel to the UI that also wakes it up.
@@ -66,5 +88,8 @@ pub trait Backend: Send + Sync {
     fn refresh_models(&self);
     fn pull(&self, model: &str, cancel: Arc<AtomicBool>);
     fn delete(&self, model: &str);
-    fn chat(&self, model: &str, history: Vec<ChatMessage>, cancel: Arc<AtomicBool>);
+    /// Streams a reply. `num_ctx` is the context window to allocate (tokens).
+    fn chat(&self, model: &str, history: Vec<ChatMessage>, num_ctx: u64, cancel: Arc<AtomicBool>);
+    /// Fetches model metadata (context length).
+    fn model_info(&self, model: &str);
 }
