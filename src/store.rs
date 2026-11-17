@@ -17,6 +17,9 @@ pub struct Conversation {
     /// Last update, ms since epoch (used for sorting).
     pub updated: u64,
     pub messages: Vec<ChatMessage>,
+    /// Pinned conversations are listed first. Defaults to false for older files.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 pub fn now_ms() -> u64 {
@@ -85,11 +88,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("liu-test-{}", now_ms()));
         // SAFETY: test-only, single-threaded access to this variable
         unsafe { std::env::set_var("XDG_DATA_HOME", &dir) };
-        let c = Conversation { id: 1, title: "t".into(), model: "m".into(), updated: 5, messages: vec![msg("user", "hi")] };
+        let c = Conversation { pinned: true, id: 1, title: "t".into(), model: "m".into(), updated: 5, messages: vec![msg("user", "hi")] };
         save(&[c]).unwrap();
         let back = load();
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].messages[0].content, "hi");
+        assert!(back[0].pinned);
         let _ = fs::remove_dir_all(dir);
     }
 }

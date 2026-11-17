@@ -83,6 +83,7 @@ struct App {
     /// Id of the conversation shown in the chat, `None` for a new unsaved one.
     current: Option<u64>,
     show_history: bool,
+    history_query: String,
 }
 
 impl App {
@@ -111,6 +112,7 @@ impl App {
             conversations: store::load(),
             current: None,
             show_history: false,
+            history_query: String::new(),
         }
     }
 
@@ -248,7 +250,9 @@ impl App {
         let now = store::now_ms();
         let id = *self.current.get_or_insert(now);
         let model = self.selected.clone().unwrap_or_default();
+        let pinned = self.conversations.iter().any(|c| c.id == id && c.pinned);
         let conv = Conversation {
+            pinned,
             id,
             title: store::title_from(&self.messages),
             model,
@@ -287,6 +291,15 @@ impl App {
         }
     }
 
+    fn toggle_pin(&mut self, id: u64) {
+        if let Some(c) = self.conversations.iter_mut().find(|c| c.id == id) {
+            c.pinned = !c.pinned;
+        }
+        if let Err(e) = store::save(&self.conversations) {
+            self.notify(&format!("Could not save history: {e}"));
+        }
+    }
+
     fn history_panel(&mut self, ui: &mut egui::Ui) {
         let streaming = self.streaming();
         ui.add_space(10.0);
@@ -304,35 +317,74 @@ impl App {
         }
         ui.add_space(8.0);
 
+        // search over titles and message contents
+        ui.add(
+            egui::TextEdit::singleline(&mut self.history_query)
+                .hint_text("Search…")
+                .desired_width(f32::INFINITY),
+        );
+        ui.add_space(8.0);
+
         if self.conversations.is_empty() {
             ui.label(RichText::new("No conversations yet.").small().color(Color32::GRAY));
             return;
         }
+
+        let query = self.history_query.trim().to_lowercase();
+        let matches = |c: &Conversation| {
+            query.is_empty()
+                || c.title.to_lowercase().contains(&query)
+                || c.messages.iter().any(|m| m.content.to_lowercase().contains(&query))
+        };
+        let pinned: Vec<&Conversation> = self.conversations.iter().filter(|c| c.pinned && matches(c)).collect();
+        let others: Vec<&Conversation> = self.conversations.iter().filter(|c| !c.pinned && matches(c)).collect();
+
         let mut open = None;
         let mut delete = None;
+        let mut pin = None;
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            for c in &self.conversations {
-                let active = self.current == Some(c.id);
-                ui.horizontal(|ui| {
-                    let w = ui.available_width() - 24.0;
-                    let resp = ui.add_enabled(
-                        !streaming,
-                        egui::Button::selectable(active, RichText::new(&c.title).size(13.0))
-                            .min_size(Vec2::new(w, 26.0))
-                            .truncate(),
-                    );
-                    if resp.clicked() {
-                        open = Some(c.id);
-                    }
-                    resp.on_hover_text(format!("{} · {} messages", c.model, c.messages.len()));
-                    if ui.add_enabled(!streaming, egui::Button::new("×").small().frame(false)).on_hover_text("Delete").clicked() {
-                        delete = Some(c.id);
-                    }
-                });
+            if pinned.is_empty() && others.is_empty() {
+                ui.label(RichText::new("No match.").small().color(Color32::GRAY));
+            }
+            for (title, list) in [("PINNED", &pinned), ("RECENT", &others)] {
+                if list.is_empty() {
+                    continue;
+                }
+                if !pinned.is_empty() {
+                    ui.label(RichText::new(title).small().monospace().color(Color32::from_gray(110)));
+                    ui.add_space(2.0);
+                }
+                for c in list.iter() {
+                    let active = self.current == Some(c.id);
+                    ui.horizontal(|ui| {
+                        let w = ui.available_width() - 48.0;
+                        let resp = ui.add_enabled(
+                            !streaming,
+                            egui::Button::selectable(active, RichText::new(&c.title).size(13.0))
+                                .min_size(Vec2::new(w, 26.0))
+                                .truncate(),
+                        );
+                        if resp.clicked() {
+                            open = Some(c.id);
+                        }
+                        resp.on_hover_text(format!("{} · {} messages", c.model, c.messages.len()));
+                        let star = if c.pinned { RichText::new("★").color(Color32::from_rgb(225, 185, 85)) } else { RichText::new("☆") };
+                        if ui.add(egui::Button::new(star).small().frame(false)).on_hover_text(if c.pinned { "Unpin" } else { "Pin" }).clicked() {
+                            pin = Some(c.id);
+                        }
+                        if ui.add_enabled(!streaming, egui::Button::new("×").small().frame(false)).on_hover_text("Delete").clicked() {
+                            delete = Some(c.id);
+                        }
+                    });
+                }
+                ui.add_space(10.0);
             }
         });
         if let Some(id) = open {
             self.open_conversation(id);
+        }
+        if let Some(id) = pin {
+            self.toggle_pin(id);
         }
         if let Some(id) = delete {
             self.delete_conversation(id);

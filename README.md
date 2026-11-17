@@ -6,3 +6,7 @@ It lets you browse, download and manage models from the GUI. Each model shows a 
 ```sh
 cargo run --release
 ```
+
+## Persistence
+
+Models themselves are managed by Ollama and stored in its own directory (`$OLLAMA_MODELS`, default `~/.ollama/models`).
