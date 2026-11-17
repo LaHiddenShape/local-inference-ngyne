@@ -84,6 +84,8 @@ struct App {
     current: Option<u64>,
     show_history: bool,
     history_query: String,
+    /// Used to detect when the Models window gets opened.
+    models_was_open: bool,
 }
 
 impl App {
@@ -113,6 +115,7 @@ impl App {
             current: None,
             show_history: false,
             history_query: String::new(),
+            models_was_open: false,
         }
     }
 
@@ -484,7 +487,7 @@ impl App {
                             });
                         } else {
                             // assistant: full-width block with a thin accent bar and model name
-                            let block = egui::Frame::new()
+                            egui::Frame::new()
                                 .fill(Color32::from_rgba_unmultiplied(18, 18, 22, 235))
                                 .stroke(Stroke::new(1.0, Color32::from_gray(38)))
                                 .inner_margin(egui::Margin { left: 16, right: 14, top: 10, bottom: 12 })
@@ -507,9 +510,6 @@ impl App {
                                         );
                                     }
                                 });
-                            if waiting {
-                                border_beam(ui.painter(), block.response.rect, now);
-                            }
                         }
                         ui.add_space(14.0);
                     }
@@ -584,6 +584,11 @@ impl App {
     // ---------------------------------------------------------- model manager
 
     fn models_window(&mut self, ctx: &egui::Context) {
+        // refresh the installed list each time the window is opened
+        if self.show_models && !self.models_was_open && matches!(self.status, RuntimeStatus::Online { .. }) {
+            self.backend.refresh_models();
+        }
+        self.models_was_open = self.show_models;
         let mut open = self.show_models;
         egui::Window::new("Models")
             .open(&mut open)
@@ -611,7 +616,13 @@ impl App {
                 ui.separator();
 
                 egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                    ui.heading("Installed");
+                    ui.horizontal(|ui| {
+                        ui.heading("Installed");
+                        if ui.small_button("⟳ Refresh").on_hover_text("Reload the list from Ollama").clicked() {
+                            self.backend.refresh_models();
+                            self.sys = SystemInfo::probe();
+                        }
+                    });
                     if self.installed.is_empty() {
                         ui.label(RichText::new("No model installed yet.").color(Color32::GRAY));
                     }
@@ -901,39 +912,6 @@ const GOLD: (u8, u8, u8) = (225, 185, 85);
 
 fn gold(alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(GOLD.0, GOLD.1, GOLD.2, (alpha.clamp(0.0, 1.0) * 255.0) as u8)
-}
-
-/// Point at distance `d` along the perimeter of `r`, clockwise from the top-left corner.
-fn perimeter_point(r: Rect, d: f32) -> Pos2 {
-    let (w, h) = (r.width(), r.height());
-    let d = d.rem_euclid(2.0 * (w + h));
-    if d < w {
-        Pos2::new(r.left() + d, r.top())
-    } else if d < w + h {
-        Pos2::new(r.right(), r.top() + d - w)
-    } else if d < 2.0 * w + h {
-        Pos2::new(r.right() - (d - w - h), r.bottom())
-    } else {
-        Pos2::new(r.left(), r.bottom() - (d - 2.0 * w - h))
-    }
-}
-
-/// A streak of light travelling around the border of a waiting response block.
-fn border_beam(painter: &egui::Painter, r: Rect, t: f32) {
-    let perimeter = 2.0 * (r.width() + r.height());
-    let head = (t * 0.45).fract() * perimeter;
-    let (segments, step) = (40, 4.0);
-    for k in 0..segments {
-        let a = perimeter_point(r, head - k as f32 * step);
-        let b = perimeter_point(r, head - (k + 1) as f32 * step);
-        // skip segments that wrap around a corner (keeps them straight)
-        if (a.x - b.x).abs() > step + 0.5 || (a.y - b.y).abs() > step + 0.5 {
-            continue;
-        }
-        let fade = 1.0 - k as f32 / segments as f32;
-        painter.line_segment([a, b], Stroke::new(1.5, gold(fade * fade)));
-    }
-    painter.circle_filled(perimeter_point(r, head), 2.5, gold(0.9));
 }
 
 /// Small rectangle with a band of light sweeping across it (loading indicator).
