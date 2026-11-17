@@ -32,6 +32,7 @@ impl App {
                         let vram = g.vram.map(fmt_bytes).unwrap_or_else(|| "shared memory".into());
                         row(ui, &format!("GPU {i} ({})", g.vendor), format!("{} · {}", g.name, vram));
                     }
+                    row(ui, "Runtime", self.backend.endpoint());
                     row(ui, "Models dir", s.models_dir.display().to_string());
                     row(ui, "Disk", format!("{} free / {}", fmt_bytes(s.disk_free), fmt_bytes(s.disk_total)));
                 });

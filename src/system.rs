@@ -89,13 +89,19 @@ fn meminfo() -> (u64, u64) {
     (get("MemTotal:"), get("MemAvailable:"))
 }
 
-/// Where Ollama stores models: $OLLAMA_MODELS or ~/.ollama/models.
+/// Where Ollama stores models: $OLLAMA_MODELS, then the per-user directory,
+/// then the one used by the official systemd service (`ollama` user).
 fn models_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("OLLAMA_MODELS") {
         return PathBuf::from(p);
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/".into());
-    home.join(".ollama/models")
+    let user = home.join(".ollama/models");
+    let service = PathBuf::from("/usr/share/ollama/.ollama/models");
+    if !user.exists() && service.exists() {
+        return service;
+    }
+    user
 }
 
 /// (free, total) bytes on the filesystem holding `path` (or its nearest existing parent).

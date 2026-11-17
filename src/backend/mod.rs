@@ -83,6 +83,8 @@ impl Sink {
 
 /// A local inference runtime (Ollama today; llama.cpp / OpenAI-compatible later).
 pub trait Backend: Send + Sync {
+    /// Address of the runtime, for display.
+    fn endpoint(&self) -> String;
     /// Detects the runtime and starts it if needed.
     fn ensure_running(&self);
     fn refresh_models(&self);

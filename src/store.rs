@@ -56,6 +56,28 @@ pub fn save(list: &[Conversation]) -> std::io::Result<()> {
     fs::rename(tmp, file())
 }
 
+/// Small app preferences, stored next to the history.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default)]
+    pub last_model: Option<String>,
+}
+
+fn settings_file() -> PathBuf {
+    data_dir().join("settings.json")
+}
+
+pub fn load_settings() -> Settings {
+    fs::read_to_string(settings_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+pub fn save_settings(s: &Settings) -> std::io::Result<()> {
+    fs::create_dir_all(data_dir())?;
+    let tmp = settings_file().with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(s)?)?;
+    fs::rename(tmp, settings_file())
+}
+
 /// Short title from the first user message.
 pub fn title_from(messages: &[ChatMessage]) -> String {
     let first = messages.iter().find(|m| m.role == "user").map(|m| m.content.as_str()).unwrap_or("New chat");

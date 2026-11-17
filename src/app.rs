@@ -6,7 +6,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, Rect, RichText, Vec2};
 
 use crate::background::draw_background;
-use crate::backend::ollama::{Ollama, DEFAULT_URL};
+use crate::backend::ollama::{url_from_env, Ollama};
 use crate::backend::{Usage, Backend, ChatMessage, Event, InstalledModel, RuntimeStatus, Sink};
 use crate::store::{self, Conversation};
 use crate::system::SystemInfo;
@@ -51,6 +51,7 @@ pub(crate) struct App {
     pub(crate) ctx_limits: HashMap<String, Option<u64>>,
     /// Token usage of the last reply in the current chat.
     pub(crate) usage: Option<Usage>,
+    pub(crate) settings: store::Settings,
 }
 
 /// Upper bound for the context window we request.
@@ -63,7 +64,7 @@ impl App {
     pub(crate) fn new(ctx: egui::Context) -> Self {
         ctx.set_visuals(square_visuals());
         let (tx, rx) = mpsc::channel();
-        let backend = Ollama::new(DEFAULT_URL, Sink::new(tx, ctx));
+        let backend = Ollama::new(&url_from_env(), Sink::new(tx, ctx));
         backend.ensure_running();
         Self {
             backend: Box::new(backend),
@@ -89,6 +90,7 @@ impl App {
             models_was_open: false,
             ctx_limits: HashMap::new(),
             usage: None,
+            settings: store::load_settings(),
         }
     }
 
@@ -111,7 +113,9 @@ impl App {
                         .as_ref()
                         .is_some_and(|s| self.installed.iter().any(|m| &m.name == s));
                     if !still_there {
-                        self.selected = self.installed.first().map(|m| m.name.clone());
+                        // restore the last used model if it is still installed
+                        let last = self.settings.last_model.clone().filter(|l| self.installed.iter().any(|m| &m.name == l));
+                        self.selected = last.or_else(|| self.installed.first().map(|m| m.name.clone()));
                     }
                     // first launch without any model: open the model manager
                     if self.installed.is_empty() && self.pulls.is_empty() {
@@ -251,6 +255,11 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.handle_events();
         self.ensure_model_info();
+        // remember the selected model across restarts
+        if self.selected.is_some() && self.selected != self.settings.last_model {
+            self.settings.last_model = self.selected.clone();
+            let _ = store::save_settings(&self.settings);
+        }
         let now = ctx.input(|i| i.time);
         ctx.request_repaint();
 

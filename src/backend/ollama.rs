@@ -16,6 +16,28 @@ use super::{Backend, ChatMessage, Event, InstalledModel, RuntimeStatus, Sink, Us
 
 pub const DEFAULT_URL: &str = "http://127.0.0.1:11434";
 
+/// Resolves the server URL like the `ollama` CLI does from `OLLAMA_HOST`:
+/// accepts `host`, `host:port`, `:port` or a full `scheme://host:port` URL.
+pub fn resolve_url(host_var: Option<&str>) -> String {
+    let Some(v) = host_var.map(str::trim).filter(|s| !s.is_empty()) else {
+        return DEFAULT_URL.into();
+    };
+    let (scheme, rest) = v.split_once("://").unwrap_or(("http", v));
+    let rest = rest.trim_end_matches('/');
+    let default_port = if scheme == "https" { "443" } else { "11434" };
+    let (host, port) = match rest.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => (h, p),
+        _ => (rest, default_port),
+    };
+    let host = if host.is_empty() { "127.0.0.1" } else { host };
+    format!("{scheme}://{host}:{port}")
+}
+
+/// Server URL from the environment.
+pub fn url_from_env() -> String {
+    resolve_url(std::env::var("OLLAMA_HOST").ok().as_deref())
+}
+
 pub struct Ollama {
     base: String,
     http: Client,
@@ -46,6 +68,10 @@ impl Ollama {
             .build()
             .expect("http client");
         Self { base: base.trim_end_matches('/').to_string(), http, sink, child: Arc::default(), owner: true }
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base
     }
 
     fn url(&self, path: &str) -> String {
@@ -139,6 +165,10 @@ fn api_error(body: &str) -> Option<String> {
 }
 
 impl Backend for Ollama {
+    fn endpoint(&self) -> String {
+        self.base_url().to_string()
+    }
+
     fn ensure_running(&self) {
         self.spawn(|me| {
             me.sink.send(Event::Status(RuntimeStatus::Checking));
@@ -321,7 +351,7 @@ mod tests {
     #[ignore]
     fn list_and_chat_against_local_ollama() {
         let (tx, rx) = mpsc::channel();
-        let o = Ollama::new(DEFAULT_URL, Sink::new(tx, eframe::egui::Context::default()));
+        let o = Ollama::new(&url_from_env(), Sink::new(tx, eframe::egui::Context::default()));
         println!("version {:?}", o.version());
         let models = o.list_models().expect("list");
         println!("installed: {:?}", models.iter().map(|m| &m.name).collect::<Vec<_>>());
@@ -350,6 +380,22 @@ mod tests {
             _ => panic!("unexpected event"),
         }
         assert!(!out.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::resolve_url;
+
+    #[test]
+    fn ollama_host_forms() {
+        assert_eq!(resolve_url(None), "http://127.0.0.1:11434");
+        assert_eq!(resolve_url(Some("")), "http://127.0.0.1:11434");
+        assert_eq!(resolve_url(Some("0.0.0.0")), "http://0.0.0.0:11434");
+        assert_eq!(resolve_url(Some("myhost:9000")), "http://myhost:9000");
+        assert_eq!(resolve_url(Some(":9000")), "http://127.0.0.1:9000");
+        assert_eq!(resolve_url(Some("https://example.com/")), "https://example.com:443");
+        assert_eq!(resolve_url(Some("http://10.0.0.2:11434")), "http://10.0.0.2:11434");
     }
 }
 
