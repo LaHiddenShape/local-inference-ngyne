@@ -84,6 +84,8 @@ impl App {
             let n = self.messages.len();
             let fallback_model = self.selected.clone().unwrap_or_default();
             let now = ui.input(|i| i.time) as f32;
+            let mut copy: Option<String> = None;
+            let mut regenerate = false;
             ui.scope_builder(egui::UiBuilder::new().max_rect(hist), |ui| {
                 egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink(false).show(ui, |ui| {
                     ui.set_width(panel_w - 12.0); // room for the scrollbar
@@ -106,7 +108,7 @@ impl App {
                             prev_model = Some(model);
                         }
                         let waiting = m.content.is_empty() && streaming && i == n - 1;
-                        let text = m.content.clone();
+                        let text = m.content.as_str();
                         if m.role == "user" {
                             // user: compact block aligned right
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
@@ -134,10 +136,14 @@ impl App {
                                     if waiting {
                                         shimmer_bar(ui, now);
                                     } else {
-                                        ui.add(
-                                            egui::Label::new(RichText::new(text).color(Color32::from_gray(225)).size(15.0))
-                                                .selectable(true),
-                                        );
+                                        // markdown: headings, lists, tables, code blocks with highlighting
+                                        ui.scope(|ui| {
+                                            ui.visuals_mut().override_text_color = Some(Color32::from_gray(225));
+                                            if let Some(body) = ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body) {
+                                                body.size = 15.0;
+                                            }
+                                            egui_commonmark::CommonMarkViewer::new().show(ui, &mut self.md_cache, text);
+                                        });
                                     }
                                 });
                             // gold accent bar along the left edge, exactly as tall as the block
@@ -147,14 +153,36 @@ impl App {
                                 0.0,
                                 Color32::from_rgb(205, 165, 70),
                             );
-                            if m.stopped {
-                                ui.label(RichText::new("stopped").small().monospace().color(Color32::from_gray(100)));
+                            // actions under the reply
+                            if !waiting {
+                                ui.horizontal(|ui| {
+                                    let small = |t: &str| {
+                                        egui::Button::new(RichText::new(t).small().monospace().color(Color32::from_gray(130)))
+                                            .frame(false)
+                                    };
+                                    if ui.add(small("copy")).on_hover_text("Copy the reply as Markdown").clicked() {
+                                        copy = Some(m.content.clone());
+                                    }
+                                    if i == n - 1 && !streaming && ui.add(small("regenerate")).on_hover_text("Ask again with the selected model").clicked() {
+                                        regenerate = true;
+                                    }
+                                    if m.stopped {
+                                        ui.label(RichText::new("· stopped").small().monospace().color(Color32::from_gray(100)));
+                                    }
+                                });
                             }
                         }
                         ui.add_space(14.0);
                     }
                 });
             });
+            if let Some(text) = copy {
+                ui.ctx().copy_text(text);
+                self.notify("Reply copied");
+            }
+            if regenerate {
+                self.regenerate();
+            }
         }
 
         let input_rect = if self.messages.is_empty() {

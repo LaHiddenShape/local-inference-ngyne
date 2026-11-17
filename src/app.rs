@@ -57,6 +57,7 @@ pub(crate) struct App {
     pub(crate) sink: Sink,
     /// Lowercased searchable text per conversation id, tagged with its `updated` stamp.
     pub(crate) search_cache: HashMap<u64, (u64, String)>,
+    pub(crate) md_cache: egui_commonmark::CommonMarkCache,
 }
 
 /// Upper bound for the context window we request.
@@ -82,6 +83,7 @@ impl App {
             probing: true,
             sink,
             search_cache: HashMap::new(),
+            md_cache: Default::default(),
             selected: None,
             pulls: HashMap::new(),
             errors: HashMap::new(),
@@ -211,13 +213,30 @@ impl App {
         if text.is_empty() || self.streaming() {
             return;
         }
-        let Some(model) = self.selected.clone() else {
+        if self.selected.is_none() {
             self.notify("Download or select a model first");
             self.show_models = true;
             return;
-        };
+        }
         self.input.clear();
         self.messages.push(ChatMessage::new("user", text));
+        self.ask();
+    }
+
+    /// Drops the last reply and asks again (with the currently selected model).
+    pub(crate) fn regenerate(&mut self) {
+        if self.streaming() || self.selected.is_none() {
+            return;
+        }
+        if self.messages.last().is_some_and(|m| m.role == "assistant") {
+            self.messages.pop();
+            self.ask();
+        }
+    }
+
+    /// Sends the current history and streams the reply into a new message.
+    fn ask(&mut self) {
+        let Some(model) = self.selected.clone() else { return };
         let history = self.messages.clone();
         self.messages.push(ChatMessage { model: Some(model.clone()), ..ChatMessage::new("assistant", "") });
         let cancel = Arc::new(AtomicBool::new(false));
