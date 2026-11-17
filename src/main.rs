@@ -487,18 +487,12 @@ impl App {
                             });
                         } else {
                             // assistant: full-width block with a thin accent bar and model name
-                            egui::Frame::new()
+                            let block = egui::Frame::new()
                                 .fill(Color32::from_rgba_unmultiplied(18, 18, 22, 235))
                                 .stroke(Stroke::new(1.0, Color32::from_gray(38)))
                                 .inner_margin(egui::Margin { left: 16, right: 14, top: 10, bottom: 12 })
                                 .show(ui, |ui| {
                                     ui.set_width(ui.available_width());
-                                    let r = ui.max_rect();
-                                    ui.painter().rect_filled(
-                                        Rect::from_min_max(Pos2::new(r.left() - 16.0, r.top() - 10.0), Pos2::new(r.left() - 13.0, r.bottom() + 12.0)),
-                                        0.0,
-                                        Color32::from_rgb(205, 165, 70),
-                                    );
                                     ui.label(RichText::new(&model).small().monospace().color(Color32::from_gray(120)));
                                     ui.add_space(2.0);
                                     if waiting {
@@ -510,6 +504,13 @@ impl App {
                                         );
                                     }
                                 });
+                            // gold accent bar along the left edge, exactly as tall as the block
+                            let r = block.response.rect;
+                            ui.painter().rect_filled(
+                                Rect::from_min_max(r.left_top(), Pos2::new(r.left() + 3.0, r.bottom())),
+                                0.0,
+                                Color32::from_rgb(205, 165, 70),
+                            );
                         }
                         ui.add_space(14.0);
                     }
