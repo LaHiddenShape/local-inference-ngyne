@@ -1,9 +1,11 @@
-//! Live discovery of uncensored models on ollama.com.
+//! Live model lists from ollama.com: the official library (Models window) and
+//! uncensored models (Uncensored window). Nothing is hard-coded.
 //!
 //! Ollama has no catalog API, so discovery is done in two layers:
 //!
-//! 1. **Listing** scrapes the search page (`ollama.com/search?q=…`), paginated
-//!    with the same htmx request the site makes for infinite scroll. The only
+//! 1. **Listing** scrapes `ollama.com/library` (one page, every official model)
+//!    or the search page (`ollama.com/search?q=…`), paginated with the same
+//!    htmx request the site makes for infinite scroll. The only
 //!    thing that must be found is each result's link (`href="/library/name"` or
 //!    `href="/user/name"`), which is how the site itself navigates and is
 //!    unlikely to change. Description, downloads, sizes and capabilities are
@@ -14,7 +16,7 @@
 //!    header of the weights read with a small HTTP range request. Both are
 //!    standard formats that cannot change without breaking Ollama itself.
 //!
-//! Results are cached on disk; the built-in list is the last resort.
+//! Results are cached on disk and shown while a refresh runs, or when offline.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -36,6 +38,38 @@ pub const CACHE_TTL_SECS: u64 = 24 * 3600;
 const REGISTRY: &str = "https://registry.ollama.ai/v2";
 const SITE: &str = "https://ollama.com";
 
+/// Which list to discover.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ListKind {
+    /// Every official model on ollama.com/library.
+    Library,
+    /// Uncensored / abliterated models, official and community.
+    Uncensored,
+}
+
+impl ListKind {
+    fn cache_name(self) -> &'static str {
+        match self {
+            ListKind::Library => "library-cache.json",
+            ListKind::Uncensored => "uncensored-cache.json",
+        }
+    }
+}
+
+/// Source page of a model tag:
+/// `llama3.2:3b` -> ollama.com/library/..., `user/model` -> ollama.com/user/model,
+/// `hf.co/org/repo:quant` -> huggingface.co/org/repo.
+pub fn model_url(tag: &str) -> String {
+    if let Some(rest) = tag.strip_prefix("hf.co/").or_else(|| tag.strip_prefix("huggingface.co/")) {
+        let repo = rest.split(':').next().unwrap_or(rest);
+        return format!("https://huggingface.co/{repo}");
+    }
+    if tag.contains('/') {
+        return format!("https://ollama.com/{tag}");
+    }
+    format!("https://ollama.com/library/{tag}")
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RemoteModel {
     /// Name to pull without a tag: "dolphin3" or "user/model".
@@ -52,7 +86,7 @@ pub struct RemoteModel {
 
 impl RemoteModel {
     pub fn url(&self) -> String {
-        crate::catalog::model_url(&self.name)
+        model_url(&self.name)
     }
 }
 
@@ -108,22 +142,22 @@ fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-fn cache_file() -> PathBuf {
-    crate::store::data_dir().join("uncensored-cache.json")
+fn cache_file(kind: ListKind) -> PathBuf {
+    crate::store::data_dir().join(kind.cache_name())
 }
 
 /// Cached list and when it was fetched (Unix seconds).
-pub fn load_cache() -> Option<(Vec<RemoteModel>, u64)> {
-    let c: Cache = serde_json::from_str(&std::fs::read_to_string(cache_file()).ok()?).ok()?;
+pub fn load_cache(kind: ListKind) -> Option<(Vec<RemoteModel>, u64)> {
+    let c: Cache = serde_json::from_str(&std::fs::read_to_string(cache_file(kind)).ok()?).ok()?;
     (!c.models.is_empty()).then_some((c.models, c.fetched_at))
 }
 
-fn save_cache(models: &[RemoteModel]) {
+fn save_cache(kind: ListKind, models: &[RemoteModel]) {
     let c = Cache { fetched_at: now_secs(), models: models.to_vec() };
     let _ = std::fs::create_dir_all(crate::store::data_dir());
-    let tmp = cache_file().with_extension("json.tmp");
+    let tmp = cache_file(kind).with_extension("json.tmp");
     if std::fs::write(&tmp, serde_json::to_vec(&c).unwrap_or_default()).is_ok() {
-        let _ = std::fs::rename(tmp, cache_file());
+        let _ = std::fs::rename(tmp, cache_file(kind));
     }
 }
 
@@ -138,8 +172,39 @@ pub fn client() -> Client {
 
 // ------------------------------------------------------------------- listing
 
-/// Fetches every matching model, official first, then by downloads.
-pub fn fetch_all(http: &Client) -> Result<Vec<RemoteModel>, String> {
+/// Fetches a list, saves it to the cache and returns it, most downloaded first
+/// (official before community for uncensored models).
+pub fn fetch(http: &Client, kind: ListKind) -> Result<Vec<RemoteModel>, String> {
+    let mut out = match kind {
+        ListKind::Library => fetch_library(http)?,
+        ListKind::Uncensored => fetch_uncensored(http)?,
+    };
+    out.sort_by(|a, b| b.official.cmp(&a.official).then(b.downloads.cmp(&a.downloads)).then(a.name.cmp(&b.name)));
+    save_cache(kind, &out);
+    Ok(out)
+}
+
+/// Official models that can run locally and chat (no cloud-only, no embedding).
+fn fetch_library(http: &Client) -> Result<Vec<RemoteModel>, String> {
+    let html = http
+        .get(format!("{SITE}/library"))
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.text())
+        .map_err(|e| format!("ollama.com: {e}"))?;
+    let out: Vec<_> = parse_page(&html).into_iter().filter(|m| m.official && is_local_chat(m)).collect();
+    if out.is_empty() {
+        return Err("no model found on ollama.com/library (page format may have changed)".into());
+    }
+    Ok(out)
+}
+
+fn is_local_chat(m: &RemoteModel) -> bool {
+    let has = |c: &str| m.capabilities.iter().any(|x| x == c);
+    !has("embedding") && !(has("cloud") && m.sizes.is_empty())
+}
+
+fn fetch_uncensored(http: &Client) -> Result<Vec<RemoteModel>, String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     let mut last_err = None;
@@ -157,7 +222,7 @@ pub fn fetch_all(http: &Client) -> Result<Vec<RemoteModel>, String> {
             for m in found {
                 if seen.insert(m.name.clone()) {
                     new += 1;
-                    if is_relevant(&m) {
+                    if is_relevant(&m) && is_local_chat(&m) {
                         out.push(m);
                     }
                 }
@@ -171,8 +236,6 @@ pub fn fetch_all(http: &Client) -> Result<Vec<RemoteModel>, String> {
     if out.is_empty() {
         return Err(last_err.unwrap_or_else(|| "no model found on ollama.com (page format may have changed)".into()));
     }
-    out.sort_by(|a, b| b.official.cmp(&a.official).then(b.downloads.cmp(&a.downloads)).then(a.name.cmp(&b.name)));
-    save_cache(&out);
     Ok(out)
 }
 
@@ -199,6 +262,9 @@ static LINK: LazyLock<Regex> = LazyLock::new(|| {
 });
 static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<p[^>]*>(.*?)</p>").unwrap());
 static DOWNLOADS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"title="([\d,.\s]+)\s*(?:downloads|pulls)""#).unwrap());
+/// Fallback on the visible text: "121.2M Pulls", "4.3M downloads".
+static DOWNLOADS_TEXT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(\d[\d,]*(?:\.\d+)?)\s*([KMB])?\s+(?:pulls|downloads)\b").unwrap());
 static SPAN_TEXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<span[^>]*>\s*([^<]{1,24}?)\s*</span>").unwrap());
 /// Lowercase only: "135m" is a size, "2M" is a download counter.
 static SIZE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:\d+x)?\d+(?:\.\d+)?[bm]$|^e\d+b$").unwrap());
@@ -235,9 +301,22 @@ pub fn parse_page(html: &str) -> Vec<RemoteModel> {
             .captures(card)
             .map(|c| html_text(&c[1]))
             .unwrap_or_default();
+        // exact count from the tooltip, else the abbreviated count shown
         let downloads = DOWNLOADS
             .captures(card)
-            .and_then(|c| c[1].chars().filter(char::is_ascii_digit).collect::<String>().parse().ok());
+            .and_then(|c| c[1].chars().filter(char::is_ascii_digit).collect::<String>().parse().ok())
+            .or_else(|| {
+                let text = html_text(&card.replace("&nbsp;", " "));
+                let c = DOWNLOADS_TEXT.captures(&text)?;
+                let n: f64 = c[1].replace(',', "").parse().ok()?;
+                let scale = match c.get(2).map(|m| m.as_str().to_ascii_uppercase()) {
+                    Some(s) if s == "K" => 1e3,
+                    Some(s) if s == "M" => 1e6,
+                    Some(s) if s == "B" => 1e9,
+                    _ => 1.0,
+                };
+                Some((n * scale) as u64)
+            });
         let mut sizes = Vec::new();
         let mut capabilities = Vec::new();
         for s in SPAN_TEXT.captures_iter(card) {
@@ -420,12 +499,16 @@ mod tests {
       <span class="b">8x7b</span><span class="b">8x22b</span></a></li>
       <li><a href="/someone/qwen3-abliterated"><span>someone/qwen3-abliterated</span>
       <span>vision</span><span>tools</span><span title="440 downloads">440</span></a></li>
-      <a href="/blog">Blog</a><a href="/library/qwen3">Qwen</a></ul>"##;
+      <a href="/blog">Blog</a><a href="/library/qwen3">Qwen</a>
+      <a href="/library/llama3.1"><span>llama3.1</span><p>Llama 3.1</p><span>tools</span><span>8b</span>
+      <p><span><svg></svg><span >121.2M</span><span>&nbsp;Pulls</span></span></p></a></ul>"##;
 
     #[test]
     fn parses_cards_and_skips_navigation() {
         let m = parse_page(CARD);
-        assert_eq!(m.len(), 3);
+        assert_eq!(m.len(), 4);
+        assert_eq!(m[3].downloads, Some(121_200_000));
+        assert_eq!(m[3].sizes, ["8b"]);
         assert_eq!(m[0].name, "dolphin-mixtral");
         assert!(m[0].official);
         assert_eq!(m[0].description, "Uncensored, 8x7b & 8x22b models.");
@@ -488,7 +571,10 @@ mod tests {
     fn live_full_discovery() {
         let http = client();
         let t = std::time::Instant::now();
-        let all = fetch_all(&http).unwrap();
+        let all = fetch(&http, ListKind::Uncensored).unwrap();
+        let lib = fetch(&http, ListKind::Library).unwrap();
+        println!("library: {} models, top: {:?}", lib.len(), lib.iter().take(5).map(|m| &m.name).collect::<Vec<_>>());
+        assert!(lib.len() > 100 && lib.iter().all(|m| m.official));
         let official = all.iter().filter(|m| m.official).count();
         println!("{} models ({official} official) in {:?}", all.len(), t.elapsed());
         for m in all.iter().take(12) {

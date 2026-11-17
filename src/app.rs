@@ -20,23 +20,21 @@ pub(crate) struct PullState {
     pub(crate) cancel: Arc<AtomicBool>,
 }
 
-/// State of the Uncensored window (live list from ollama.com).
+/// A live model list from ollama.com and its filters (Models and Uncensored windows).
 #[derive(Default)]
-pub(crate) struct UncensoredState {
+pub(crate) struct BrowserState {
     pub(crate) models: Vec<crate::discover::RemoteModel>,
     /// Unix seconds of the list shown (0 = never fetched).
     pub(crate) fetched_at: u64,
     pub(crate) discovering: bool,
     pub(crate) error: Option<String>,
-    /// Registry details per tag; `None` while loading.
-    pub(crate) details: HashMap<String, Option<Result<crate::discover::Details, String>>>,
     pub(crate) filter: String,
     /// Size tag picked per model name.
     pub(crate) size: HashMap<String, String>,
     /// Number of rows shown (grows with "Show more").
     pub(crate) limit: usize,
     pub(crate) was_open: bool,
-    pub(crate) filters: UncensoredFilters,
+    pub(crate) filters: Filters,
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -56,7 +54,7 @@ pub(crate) enum SortBy {
 }
 
 #[derive(Clone, Default, PartialEq)]
-pub(crate) struct UncensoredFilters {
+pub(crate) struct Filters {
     pub(crate) source: Source,
     pub(crate) sort: SortBy,
     /// Maximum parameters in billions (`None` = any).
@@ -94,7 +92,10 @@ pub(crate) struct App {
     pub(crate) show_models: bool,
     pub(crate) show_system: bool,
     pub(crate) show_uncensored: bool,
-    pub(crate) unc: UncensoredState,
+    pub(crate) unc: BrowserState,
+    pub(crate) library: BrowserState,
+    /// Registry details per model tag, shared by both lists; `None` while loading.
+    pub(crate) remote_details: HashMap<String, Option<Result<crate::discover::Details, String>>>,
     pub(crate) toast: Option<(String, f64)>,
 
     pub(crate) conversations: Vec<Conversation>,
@@ -158,7 +159,9 @@ impl App {
             show_models: false,
             show_system: false,
             show_uncensored: false,
-            unc: UncensoredState::default(),
+            unc: BrowserState::default(),
+            library: BrowserState::default(),
+            remote_details: HashMap::new(),
             toast: None,
             conversations: store::load(),
             current: None,
@@ -257,19 +260,20 @@ impl App {
                     self.ctx_limits.insert(model, context_length);
                 }
                 Event::Attached(results) => self.add_attachments(results),
-                Event::Discovered(result) => {
-                    self.unc.discovering = false;
+                Event::Discovered { kind, result } => {
+                    let b = self.browser_mut(kind);
+                    b.discovering = false;
                     match result {
                         Ok(models) => {
-                            self.unc.models = models;
-                            self.unc.fetched_at = crate::discover::load_cache().map(|c| c.1).unwrap_or(0);
-                            self.unc.error = None;
+                            b.models = models;
+                            b.fetched_at = crate::discover::load_cache(kind).map(|c| c.1).unwrap_or(0);
+                            b.error = None;
                         }
-                        Err(e) => self.unc.error = Some(e),
+                        Err(e) => b.error = Some(e),
                     }
                 }
                 Event::RemoteDetails { tag, result } => {
-                    self.unc.details.insert(tag, Some(result));
+                    self.remote_details.insert(tag, Some(result));
                 }
             }
         }

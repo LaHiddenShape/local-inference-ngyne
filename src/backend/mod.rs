@@ -80,7 +80,7 @@ pub enum Event {
     /// Files picked in the file dialog, loaded in the background.
     Attached(Vec<Result<crate::attach::Attachment, String>>),
     /// Uncensored models listed on ollama.com.
-    Discovered(Result<Vec<crate::discover::RemoteModel>, String>),
+    Discovered { kind: crate::discover::ListKind, result: Result<Vec<crate::discover::RemoteModel>, String> },
     /// Registry details of one model tag.
     RemoteDetails { tag: String, result: Result<crate::discover::Details, String> },
 }

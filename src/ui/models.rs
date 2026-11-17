@@ -4,7 +4,7 @@ use eframe::egui::{self, Color32, RichText};
 
 use crate::app::App;
 use crate::backend::{InstalledModel, RuntimeStatus};
-use crate::catalog::{self, model_url, CATALOG, UNCENSORED};
+use crate::discover::{model_url, ListKind};
 use crate::system::{fmt_bytes, Fit, SystemInfo};
 use crate::ui::widgets::*;
 
@@ -17,6 +17,7 @@ impl App {
             self.backend.refresh_models();
         }
         self.models_was_open = self.show_models;
+        self.browser_opened(ListKind::Library, self.show_models);
         let mut open = self.show_models;
         egui::Window::new("Models")
             .open(&mut open)
@@ -57,12 +58,12 @@ impl App {
                     for m in self.installed.clone() {
                         self.installed_row(ui, &m);
                     }
-                    // custom pulls not in the catalog
+                    // custom pulls not shown in a list
                     let extra: Vec<String> = self
                         .pulls
                         .keys()
                         .chain(self.errors.keys())
-                        .filter(|k| !CATALOG.iter().chain(UNCENSORED).any(|c| c.tag == k.as_str()))
+                        .filter(|k| !self.listed(k))
                         .filter(|k| !self.installed.iter().any(|m| &m.name == *k))
                         .cloned()
                         .collect();
@@ -74,16 +75,16 @@ impl App {
                     }
 
                     ui.add_space(12.0);
-                    ui.heading("Catalog");
+                    ui.heading("Library");
                     ui.label(
-                        RichText::new("Recommendations are based on your hardware (see System).")
+                        RichText::new("Every official model on ollama.com/library. Fit badges are based on your hardware (see System).")
                             .small()
                             .color(Color32::GRAY),
                     );
                     ui.add_space(4.0);
-                    for c in CATALOG {
-                        self.catalog_row(ui, c);
-                    }
+                    self.browser_header(ui, ListKind::Library);
+                    ui.add_space(4.0);
+                    self.browser_list(ui, ListKind::Library);
                 });
             });
         self.show_models = open;
@@ -167,48 +168,6 @@ impl App {
                 self.start_pull(tag);
             }
         }
-    }
-
-    pub(crate) fn catalog_row(&mut self, ui: &mut egui::Ui, c: &catalog::CatalogModel) {
-        let fit = Fit::assess(c.size_bytes(), &self.sys);
-        let url = c.url();
-        egui::Frame::new()
-            .fill(Color32::from_rgb(20, 20, 24))
-            .inner_margin(8.0)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(c.tag).strong().size(15.0));
-                    ui.label(RichText::new(format!("{} · {:.1} GB · {}K context", c.params, c.size_gb, c.ctx_k)).small().color(Color32::GRAY));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if !self.probing {
-                            Self::fit_badge(ui, fit);
-                        }
-                    });
-                });
-                ui.label(RichText::new(c.description).color(Color32::from_gray(190)));
-                ui.horizontal(|ui| {
-                    ui.hyperlink_to(RichText::new(&url).small().monospace(), &url);
-                    self.copy_button(ui, &url);
-                });
-                ui.horizontal(|ui| {
-                    if self.is_installed(c.tag) {
-                        ui.label(RichText::new("✓ Installed").color(Color32::from_rgb(90, 200, 120)));
-                    } else if self.pulls.contains_key(c.tag) || self.errors.contains_key(c.tag) {
-                        self.pull_status(ui, c.tag);
-                    } else {
-                        let label = match fit {
-                            Fit::Gpu | Fit::Cpu => "Download",
-                            Fit::TooBig | Fit::NoDisk => "Download anyway",
-                        };
-                        let online = matches!(self.status, RuntimeStatus::Online { .. });
-                        if ui.add_enabled(online, egui::Button::new(label)).clicked() {
-                            self.start_pull(c.tag);
-                        }
-                    }
-                });
-            });
-        ui.add_space(6.0);
     }
 
     pub(crate) fn installed_row(&mut self, ui: &mut egui::Ui, m: &InstalledModel) {
