@@ -8,7 +8,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 use eframe::egui;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuntimeStatus {
@@ -25,7 +25,7 @@ pub struct InstalledModel {
     pub size: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,

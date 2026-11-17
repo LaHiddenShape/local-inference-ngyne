@@ -11,7 +11,7 @@ fn hash2(x: i32, y: i32) -> f32 {
 }
 
 /// Width (in px) of the centered chat column, kept free of decorations.
-pub const CHAT_WIDTH: f32 = 500.0;
+pub const CHAT_WIDTH: f32 = 640.0;
 
 pub fn draw_background(painter: &egui::Painter, rect: Rect, t: f32) {
     painter.rect_filled(rect, 0.0, Color32::from_rgb(11, 11, 13));
@@ -106,7 +106,7 @@ fn draw_pyramids(painter: &egui::Painter, rect: Rect, t: f32) {
                     rect.min + Vec2::new(gx as f32 * CELL + 1.0, gy as f32 * CELL + 1.0),
                     Vec2::splat(CELL - 2.0),
                 );
-                painter.rect_filled(cell, 1.0, fill);
+                painter.rect_filled(cell, 0.0, fill);
                 if n > 0.45 {
                     let g = GLYPHS[(n * 97.0) as usize % GLYPHS.len()];
                     let fg = if lit { Color32::from_gray(25) } else { Color32::from_gray(130) };
@@ -195,7 +195,7 @@ fn draw_bird(painter: &egui::Painter, rect: Rect, t: f32) {
                 '>' => (Color32::from_rgb(200, 150, 55), None),
                 _ => (Color32::from_gray(150 + (n * 70.0) as u8), Some(GLYPHS[(n * GLYPHS.len() as f32) as usize % GLYPHS.len()])),
             };
-            painter.rect_filled(cell, 1.0, fill);
+            painter.rect_filled(cell, 0.0, fill);
             if let Some(g) = glyph {
                 painter.text(cell.center(), Align2::CENTER_CENTER, g, font.clone(), Color32::from_gray(15));
             }
