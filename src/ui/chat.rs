@@ -43,7 +43,7 @@ impl App {
                 // locked while a reply is streaming so it is attributed to the right model
                 let streaming = self.streaming();
                 ui.add_enabled_ui(!streaming, |ui| {
-                    egui::ComboBox::from_id_salt("model_select")
+                    let combo = egui::ComboBox::from_id_salt("model_select")
                         .selected_text(label)
                         .width(if compact { 130.0 } else { 170.0 })
                         .show_ui(ui, |ui| {
@@ -51,6 +51,8 @@ impl App {
                                 ui.selectable_value(&mut self.selected, Some(m.name.clone()), &m.name);
                             }
                         });
+                    // the selector shows no label: name it for screen readers
+                    combo.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, !streaming, "Model"));
                 })
                 .response
                 .on_disabled_hover_text("Wait for the reply to finish");
@@ -64,7 +66,7 @@ impl App {
                 if ui.button("System").clicked() {
                     self.show_system = !self.show_system;
                 }
-                if !self.messages.is_empty() && !self.streaming() && ui.button("New chat").clicked() {
+                if !self.messages.is_empty() && !self.streaming() && ui.button("New chat").on_hover_text("Ctrl+N").clicked() {
                     self.new_chat();
                 }
             });
@@ -262,6 +264,9 @@ impl App {
             Rect::from_min_size(Pos2::new(left, rect.bottom() - input_h - 24.0), Vec2::new(panel_w, input_h))
         };
         let input_id = egui::Id::unique("chat_input");
+        if std::mem::take(&mut self.focus_input) {
+            ui.memory_mut(|m| m.request_focus(input_id));
+        }
         let mut send = false;
         let mut stop = false;
         // Enter sends, Shift+Enter inserts a newline
@@ -330,11 +335,13 @@ impl App {
                         self.context_gauge(ui);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if self.streaming() {
-                                if ui.add(egui::Button::new("■ Stop").min_size(Vec2::new(64.0, 28.0))).clicked() {
+                                if ui.add(egui::Button::new("■ Stop").min_size(Vec2::new(64.0, 28.0))).on_hover_text("Esc").clicked() {
                                     stop = true;
                                 }
                             } else {
-                                if ui.add(egui::Button::new(RichText::new("↗").size(16.0)).min_size(Vec2::new(34.0, 28.0))).clicked() {
+                                let something = !self.input.trim().is_empty() || !self.pending.is_empty();
+                                let button = egui::Button::new(RichText::new("↗").size(16.0)).min_size(Vec2::new(34.0, 28.0));
+                                if ui.add_enabled(something, button).on_hover_text("Send (Enter)").clicked() {
                                     send = true;
                                 }
                                 if ui
