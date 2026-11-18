@@ -20,7 +20,7 @@ impl App {
         let bar = Rect::from_center_size(Pos2::new(rect.center().x, rect.top() + 28.0), Vec2::new(width, 34.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
             ui.horizontal_centered(|ui| {
-                let (color, text) = match &self.status {
+                let (color, text) = match &self.runtime.status {
                     RuntimeStatus::Checking => (Color32::GRAY, "checking…".to_string()),
                     RuntimeStatus::Starting => (theme::WARNING, "starting ollama…".into()),
                     RuntimeStatus::Online { version } => (theme::SUCCESS, format!("ollama {version}")),
@@ -34,7 +34,7 @@ impl App {
                 } else {
                     ui.label(RichText::new(&text).size(12.0).color(Color32::from_gray(170)))
                 };
-                if let RuntimeStatus::Offline { error } = &self.status {
+                if let RuntimeStatus::Offline { error } = &self.runtime.status {
                     status.on_hover_text(error);
                     if ui.small_button("Retry").clicked() {
                         self.backend.ensure_running();
@@ -42,16 +42,16 @@ impl App {
                 }
 
                 ui.add_space(12.0);
-                let label = self.selected.clone().unwrap_or_else(|| "no model".into());
+                let label = self.runtime.selected.clone().unwrap_or_else(|| "no model".into());
                 // locked while a reply is streaming so it is attributed to the right model
-                let streaming = self.streaming();
+                let streaming = self.chat.streaming();
                 ui.add_enabled_ui(!streaming, |ui| {
                     let combo = egui::ComboBox::from_id_salt("model_select")
                         .selected_text(label)
                         .width(if compact { 130.0 } else { 170.0 })
                         .show_ui(ui, |ui| {
-                            for m in &self.installed {
-                                ui.selectable_value(&mut self.selected, Some(m.name.clone()), &m.name);
+                            for m in &self.runtime.installed {
+                                ui.selectable_value(&mut self.runtime.selected, Some(m.name.clone()), &m.name);
                             }
                         });
                     // the selector shows no label: name it for screen readers
@@ -61,24 +61,24 @@ impl App {
                 .on_disabled_hover_text("Wait for the reply to finish");
 
                 if ui.button("Models").clicked() {
-                    self.show_models = !self.show_models;
+                    self.view.show_models = !self.view.show_models;
                 }
                 if ui.button("Uncensored").clicked() {
-                    self.show_uncensored = !self.show_uncensored;
+                    self.view.show_uncensored = !self.view.show_uncensored;
                 }
                 if ui.button("System").clicked() {
-                    self.show_system = !self.show_system;
+                    self.view.show_system = !self.view.show_system;
                 }
                 // downloads keep going with the Models window closed: show them here
-                if !self.pulls.is_empty() {
-                    let (done, total) = self.pulls.values().fold((0, 0), |(d, t), p| (d + p.completed, t + p.total));
+                if !self.runtime.pulls.is_empty() {
+                    let (done, total) = self.runtime.pulls.values().fold((0, 0), |(d, t), p| (d + p.completed, t + p.total));
                     let progress = if total > 0 { format!("{:.0}%", done as f64 * 100.0 / total as f64) } else { "…".into() };
-                    let tip: Vec<String> = self.pulls.iter().map(|(tag, p)| format!("{tag}: {}", p.status)).collect();
+                    let tip: Vec<String> = self.runtime.pulls.iter().map(|(tag, p)| format!("{tag}: {}", p.status)).collect();
                     if ui.button(format!("↓ {progress}")).on_hover_text(tip.join("\n")).clicked() {
-                        self.show_models = true;
+                        self.view.show_models = true;
                     }
                 }
-                if !self.messages.is_empty() && !self.streaming() && ui.button("New chat").on_hover_text("Ctrl+N").clicked() {
+                if !self.chat.messages.is_empty() && !self.chat.streaming() && ui.button("New chat").on_hover_text("Ctrl+N").clicked() {
                     self.new_chat();
                 }
             });
@@ -91,17 +91,17 @@ impl App {
         let panel_w = CHAT_WIDTH.min(rect.width() - 40.0);
         self.handle_dropped_files(ui, rect);
         let overflow = self.context_overflow();
-        let no_vision = self.pending.iter().any(|a| a.is_image()) && !self.selected_has_vision();
+        let no_vision = self.chat.pending.iter().any(|a| a.is_image()) && !self.runtime.selected_has_vision();
         let warnings = overflow.is_some() as u8 + no_vision as u8;
         let pending_h = match () {
-            _ if self.pending.is_empty() => 0.0,
-            _ if self.pending.iter().any(|a| a.is_image()) => 66.0, // 48 px previews
+            _ if self.chat.pending.is_empty() => 0.0,
+            _ if self.chat.pending.iter().any(|a| a.is_image()) => 66.0, // 48 px previews
             _ => 30.0,
         };
         let input_h = 118.0 + pending_h + 18.0 * warnings as f32;
         let left = rect.center().x - panel_w / 2.0;
 
-        if self.messages.is_empty() {
+        if self.chat.messages.is_empty() {
             ui.painter().text(
                 rect.center() - Vec2::new(0.0, 100.0),
                 Align2::CENTER_CENTER,
@@ -114,14 +114,14 @@ impl App {
                 Pos2::new(left, rect.top() + 64.0),
                 Pos2::new(left + panel_w, rect.bottom() - input_h - 40.0),
             );
-            let streaming = self.streaming();
-            let n = self.messages.len();
-            let fallback_model = self.selected.clone().unwrap_or_default();
+            let streaming = self.chat.streaming();
+            let n = self.chat.messages.len();
+            let fallback_model = self.runtime.selected.clone().unwrap_or_default();
             let now = ui.input(|i| i.time) as f32;
             let mut copy: Option<String> = None;
             let mut regenerate = false;
             let width_bits = panel_w.to_bits();
-            let layout = &mut self.msg_layout;
+            let layout = &mut self.chat.msg_layout;
             layout.resize(n, (0, 0.0));
             ui.scope_builder(egui::UiBuilder::new().max_rect(hist), |ui| {
                 egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink(false).show_viewport(ui, |ui, viewport| {
@@ -131,7 +131,7 @@ impl App {
                     let spacing = ui.spacing().item_spacing.y;
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let mut prev_model: Option<&str> = None;
-                    for (i, m) in self.messages.iter().enumerate() {
+                    for (i, m) in self.chat.messages.iter().enumerate() {
                         let model = m.model.as_deref().unwrap_or(&fallback_model);
                         // mark a model switch inside the conversation
                         let switched = m.role == Role::Assistant && prev_model.is_some_and(|p| p != model);
@@ -178,7 +178,7 @@ impl App {
                                                 if !m.attachments.is_empty() {
                                                     ui.horizontal_wrapped(|ui| {
                                                         for a in &m.attachments {
-                                                            if !image_preview(ui, &mut self.thumbs, &self.sink, a, 96.0) {
+                                                            if !image_preview(ui, &mut self.chat.thumbs, &self.sink, a, 96.0) {
                                                                 attachment_chip(ui, a, true);
                                                             }
                                                         }
@@ -226,7 +226,7 @@ impl App {
                                                     body.size = 15.0;
                                                 }
                                                 let markdown = keep_line_breaks(answer);
-                                                egui_commonmark::CommonMarkViewer::new().show(ui, &mut self.md_cache, &markdown);
+                                                egui_commonmark::CommonMarkViewer::new().show(ui, &mut self.chat.md_cache, &markdown);
                                             });
                                         }
                                         if let Some(e) = &m.error {
@@ -270,26 +270,26 @@ impl App {
             });
             if let Some(text) = copy {
                 ui.ctx().copy_text(text);
-                self.notify("Reply copied");
+                self.view.notify("Reply copied");
             }
             if regenerate {
                 self.regenerate();
             }
         }
 
-        let input_rect = if self.messages.is_empty() {
+        let input_rect = if self.chat.messages.is_empty() {
             Rect::from_center_size(rect.center() + Vec2::new(0.0, 10.0), Vec2::new(panel_w, input_h))
         } else {
             Rect::from_min_size(Pos2::new(left, rect.bottom() - input_h - 24.0), Vec2::new(panel_w, input_h))
         };
         // notices go above the message box, or below it while it sits centered
-        self.notice_anchor = if self.messages.is_empty() {
+        self.view.notice_anchor = if self.chat.messages.is_empty() {
             (input_rect.center_bottom() + Vec2::new(0.0, 14.0), 1.0)
         } else {
             (input_rect.center_top() - Vec2::new(0.0, 10.0), -1.0)
         };
         let input_id = egui::Id::unique("chat_input");
-        if std::mem::take(&mut self.focus_input) {
+        if std::mem::take(&mut self.view.focus_input) {
             ui.memory_mut(|m| m.request_focus(input_id));
         }
         let mut send = false;
@@ -307,15 +307,15 @@ impl App {
                 .inner_margin(egui::Margin::symmetric(14, 12))
                 .show(ui, |ui| {
                     ui.set_width(panel_w - 28.0);
-                    let hint = match &self.selected {
+                    let hint = match &self.runtime.selected {
                         Some(m) => format!("Ask {m} anything…"),
                         None => "Download a model to start…".into(),
                     };
-                    if !self.pending.is_empty() {
+                    if !self.chat.pending.is_empty() {
                         let mut remove = None;
                         ui.horizontal_wrapped(|ui| {
-                            for (i, a) in self.pending.iter().enumerate() {
-                                if !image_preview(ui, &mut self.thumbs, &self.sink, a, 48.0) {
+                            for (i, a) in self.chat.pending.iter().enumerate() {
+                                if !image_preview(ui, &mut self.chat.thumbs, &self.sink, a, 48.0) {
                                     attachment_chip(ui, a, false);
                                 }
                                 if ui.small_button("×").on_hover_text("Remove").clicked() {
@@ -325,7 +325,7 @@ impl App {
                             }
                         });
                         if let Some(i) = remove {
-                            self.pending.remove(i);
+                            self.chat.pending.remove(i);
                         }
                     }
                     let warn = |ui: &mut egui::Ui, text: String| {
@@ -347,7 +347,7 @@ impl App {
                     }
                     egui::ScrollArea::vertical().max_height(118.0 - 54.0).id_salt("input_scroll").show(ui, |ui| {
                         ui.add(
-                            egui::TextEdit::multiline(&mut self.input)
+                            egui::TextEdit::multiline(&mut self.chat.input)
                                 .id(input_id)
                                 .hint_text(hint)
                                 .frame(egui::Frame::NONE)
@@ -361,12 +361,12 @@ impl App {
                     ui.horizontal(|ui| {
                         self.context_gauge(ui);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if self.streaming() {
+                            if self.chat.streaming() {
                                 if ui.add(egui::Button::new("■ Stop").min_size(Vec2::new(64.0, 28.0))).on_hover_text("Esc").clicked() {
                                     stop = true;
                                 }
                             } else {
-                                let something = !self.input.trim().is_empty() || !self.pending.is_empty();
+                                let something = !self.chat.input.trim().is_empty() || !self.chat.pending.is_empty();
                                 let button = egui::Button::new(RichText::new("↗").size(16.0)).min_size(Vec2::new(34.0, 28.0));
                                 if ui.add_enabled(something, button).on_hover_text("Send (Enter)").clicked() {
                                     send = true;
@@ -389,7 +389,7 @@ impl App {
             ui.memory_mut(|m| m.request_focus(input_id));
         }
         if stop {
-            self.stop();
+            self.chat.stop();
         }
     }
 
@@ -416,7 +416,7 @@ impl App {
     /// Tokens used by the conversation vs. the context window of the model;
     /// a click opens the System window, where the window size is set.
     fn context_gauge(&mut self, ui: &mut egui::Ui) {
-        let (Some(usage), Some(model)) = (self.usage, self.selected.as_deref()) else { return };
+        let (Some(usage), Some(model)) = (self.chat.usage, self.runtime.selected.as_deref()) else { return };
         let limit = self.num_ctx(model);
         let used = usage.prompt_tokens + usage.completion_tokens;
         let frac = (used as f32 / limit as f32).clamp(0.0, 1.0);
@@ -439,7 +439,7 @@ impl App {
             "Tokens used by this conversation / context window of the model. Click to change it."
         };
         if bar.union(label).on_hover_text(tip).clicked() {
-            self.show_system = true;
+            self.view.show_system = true;
         }
     }
 }

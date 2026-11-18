@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Color32, RichText};
 
-use crate::app::{App, BrowserState, Filters, SortBy, Source};
+use crate::app::{App, Filters, SortBy, Source};
 use crate::ui::theme;
 use crate::backend::{Event, RuntimeStatus};
 use crate::discover::{self, ListKind, RemoteModel};
@@ -17,24 +17,12 @@ const MAX_DETAIL_REQUESTS: usize = 4;
 pub(crate) type Shown = Vec<(usize, Vec<String>)>;
 
 impl App {
-    pub(crate) fn browser(&self, kind: ListKind) -> &BrowserState {
-        match kind {
-            ListKind::Library => &self.library,
-            ListKind::Uncensored => &self.unc,
-        }
-    }
 
-    pub(crate) fn browser_mut(&mut self, kind: ListKind) -> &mut BrowserState {
-        match kind {
-            ListKind::Library => &mut self.library,
-            ListKind::Uncensored => &mut self.unc,
-        }
-    }
 
     /// Call every frame with the window's open flag: on opening, shows the
     /// cached list and refreshes it in the background when stale.
     pub(crate) fn browser_opened(&mut self, kind: ListKind, open: bool) {
-        let b = self.browser_mut(kind);
+        let b = self.catalog.browser_mut(kind);
         let just_opened = open && !b.was_open;
         b.was_open = open;
         if !just_opened {
@@ -52,14 +40,14 @@ impl App {
         let stale = discover::now_secs().saturating_sub(b.fetched_at) > discover::CACHE_TTL_SECS;
         let refetch = b.models.is_empty() || stale;
         // failed lookups get another chance
-        self.remote_details.retain(|_, d| !matches!(d, Some(Err(_))));
+        self.catalog.details.retain(|_, d| !matches!(d, Some(Err(_))));
         if refetch {
             self.discover(kind);
         }
     }
 
     pub(crate) fn discover(&mut self, kind: ListKind) {
-        let b = self.browser_mut(kind);
+        let b = self.catalog.browser_mut(kind);
         if b.discovering {
             return;
         }
@@ -75,7 +63,7 @@ impl App {
     /// to show, computed once per frame for the header and the list.
     pub(crate) fn browser_header(&mut self, ui: &mut egui::Ui, kind: ListKind) -> Shown {
         ui.horizontal(|ui| {
-            let b = self.browser_mut(kind);
+            let b = self.catalog.browser_mut(kind);
             ui.add(egui::TextEdit::singleline(&mut b.filter).hint_text("Filter by name or description").desired_width(240.0));
             let discovering = b.discovering;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -89,7 +77,7 @@ impl App {
         });
         self.filters_ui(ui, kind);
         let shown = self.filtered(kind);
-        let b = self.browser(kind);
+        let b = self.catalog.browser(kind);
         let total = b.models.len();
         let mut line = format!("{} shown · {total} models", shown.len());
         if kind == ListKind::Uncensored {
@@ -113,7 +101,7 @@ impl App {
 
     /// The filtered rows, paginated with "Show more".
     pub(crate) fn browser_list(&mut self, ui: &mut egui::Ui, kind: ListKind, shown: &Shown) {
-        let b = self.browser(kind);
+        let b = self.catalog.browser(kind);
         if b.models.is_empty() {
             let msg = if b.discovering {
                 "Loading the list from ollama.com…"
@@ -129,13 +117,13 @@ impl App {
         }
         for (i, sizes) in shown.iter().take(limit) {
             // a copy of the drawn rows only (the row needs `&mut self`)
-            let m = self.browser(kind).models[*i].clone();
+            let m = self.catalog.browser(kind).models[*i].clone();
             self.remote_row(ui, kind, &m, sizes);
         }
         if shown.len() > limit {
             ui.vertical_centered(|ui| {
                 if ui.button(format!("Show more ({} left)", shown.len() - limit)).clicked() {
-                    self.browser_mut(kind).limit += PAGE;
+                    self.catalog.browser_mut(kind).limit += PAGE;
                 }
             });
         }
@@ -144,19 +132,19 @@ impl App {
     /// Queues a registry lookup for `tag` unless it is known or pending. The
     /// last requested goes first: those are the rows just scrolled into view.
     fn request_details(&mut self, tag: &str) {
-        if self.remote_details.contains_key(tag) {
+        if self.catalog.details.contains_key(tag) {
             return;
         }
-        self.remote_details.insert(tag.to_string(), None);
-        self.details_queue.push_front(tag.to_string());
+        self.catalog.details.insert(tag.to_string(), None);
+        self.catalog.queue.push_front(tag.to_string());
         self.pump_details();
     }
 
     /// Starts queued lookups, a few at a time.
     pub(crate) fn pump_details(&mut self) {
-        while self.details_in_flight < MAX_DETAIL_REQUESTS {
-            let Some(tag) = self.details_queue.pop_front() else { break };
-            self.details_in_flight += 1;
+        while self.catalog.in_flight < MAX_DETAIL_REQUESTS {
+            let Some(tag) = self.catalog.queue.pop_front() else { break };
+            self.catalog.in_flight += 1;
             let sink = self.sink.clone();
             std::thread::spawn(move || {
                 let result = discover::details(discover::client(), &tag);
@@ -166,7 +154,7 @@ impl App {
     }
 
     fn filters_ui(&mut self, ui: &mut egui::Ui, kind: ListKind) {
-        let f = &mut self.browser_mut(kind).filters;
+        let f = &mut self.catalog.browser_mut(kind).filters;
         let id = |s: &str| (s.to_string(), kind);
         ui.horizontal_wrapped(|ui| {
             // the library is official only
@@ -216,11 +204,11 @@ impl App {
 
     /// Models passing the filters, each with the size tags it can be pulled in.
     fn filtered(&self, kind: ListKind) -> Shown {
-        let b = self.browser(kind);
+        let b = self.catalog.browser(kind);
         let f = &b.filters;
         let text = b.filter.trim().to_lowercase();
         // while the hardware probe runs the memory is unknown: don't hide anything
-        let fits = |bytes: u64| self.probing || matches!(Fit::assess(bytes, &self.sys), Fit::Gpu | Fit::Cpu);
+        let fits = |bytes: u64| self.hw.probing || matches!(Fit::assess(bytes, &self.hw.info), Fit::Gpu | Fit::Cpu);
         let mut out: Vec<(usize, Vec<String>, Option<f64>)> = Vec::new();
         for (i, m) in b.models.iter().enumerate() {
             match f.source {
@@ -231,7 +219,7 @@ impl App {
             if !text.is_empty() && !m.name.to_lowercase().contains(&text) && !m.description.to_lowercase().contains(&text) {
                 continue;
             }
-            let details = match self.remote_details.get(&m.name) {
+            let details = match self.catalog.details.get(&m.name) {
                 Some(Some(Ok(d))) => Some(d),
                 _ => None,
             };
@@ -286,13 +274,13 @@ impl App {
     /// `sizes`: the size tags allowed by the filters (empty if the site lists none).
     fn remote_row(&mut self, ui: &mut egui::Ui, kind: ListKind, m: &RemoteModel, sizes: &[String]) {
         // keep the user's pick if still allowed, else the largest allowed size
-        let picked = self.browser(kind).size.get(&m.name).filter(|s| sizes.contains(s)).cloned();
+        let picked = self.catalog.browser(kind).size.get(&m.name).filter(|s| sizes.contains(s)).cloned();
         let size = picked.or_else(|| self.default_size(sizes));
         let tag = match &size {
             Some(s) => format!("{}:{s}", m.name),
             None => m.name.clone(),
         };
-        let details = self.remote_details.get(&tag).cloned().flatten();
+        let details = self.catalog.details.get(&tag).cloned().flatten();
         let url = m.url();
         let mut retry = false;
         let row = egui::Frame::new().fill(Color32::from_rgb(20, 20, 24)).inner_margin(8.0).show(ui, |ui| {
@@ -312,8 +300,8 @@ impl App {
                     ui.label(RichText::new(format!("↓ {}", short_count(n))).small().color(Color32::GRAY));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let (Some(Ok(d)), false) = (&details, self.probing) {
-                        Self::fit_badge(ui, Fit::assess(d.size, &self.sys));
+                    if let (Some(Ok(d)), false) = (&details, self.hw.probing) {
+                        Self::fit_badge(ui, Fit::assess(d.size, &self.hw.info));
                     }
                 });
             });
@@ -331,7 +319,7 @@ impl App {
                         }
                     });
                     if Some(&pick) != size.as_ref() {
-                        self.browser_mut(kind).size.insert(m.name.clone(), pick);
+                        self.catalog.browser_mut(kind).size.insert(m.name.clone(), pick);
                     }
                 } else if let Some(s) = &size {
                     ui.label(RichText::new(s).small().monospace());
@@ -357,17 +345,17 @@ impl App {
             });
             ui.horizontal(|ui| {
                 ui.hyperlink_to(RichText::new(&url).small().monospace(), &url);
-                self.copy_button(ui, &url);
+                self.view.copy_button(ui, &url);
             });
             ui.horizontal(|ui| {
-                if self.is_installed(&tag) {
+                if self.runtime.is_installed(&tag) {
                     ui.label(RichText::new("✓ Installed").color(theme::SUCCESS));
-                } else if self.pulls.contains_key(&tag) || self.errors.contains_key(&tag) {
+                } else if self.runtime.pulls.contains_key(&tag) || self.runtime.errors.contains_key(&tag) {
                     self.pull_status(ui, &tag);
                 } else {
-                    let online = matches!(self.status, RuntimeStatus::Online { .. });
+                    let online = matches!(self.runtime.status, RuntimeStatus::Online { .. });
                     let label = match &details {
-                        Some(Ok(d)) if matches!(Fit::assess(d.size, &self.sys), Fit::TooBig | Fit::NoDisk) => "Download anyway",
+                        Some(Ok(d)) if matches!(Fit::assess(d.size, &self.hw.info), Fit::TooBig | Fit::NoDisk) => "Download anyway",
                         _ => "Download",
                     };
                     if ui.add_enabled(online, egui::Button::new(label)).on_hover_text(format!("ollama pull {tag}")).clicked() {
@@ -377,7 +365,7 @@ impl App {
             });
         });
         if retry {
-            self.remote_details.remove(&tag);
+            self.catalog.details.remove(&tag);
         }
         // registry lookups only for rows actually on screen
         if ui.is_rect_visible(row.response.rect) {
@@ -390,10 +378,10 @@ impl App {
     /// largest that fits in memory, else the smallest (the largest while the
     /// hardware is still being probed). `sizes` is sorted smallest first.
     fn default_size(&self, sizes: &[String]) -> Option<String> {
-        if self.probing {
+        if self.hw.probing {
             return sizes.last().cloned();
         }
-        let fit = |s: &&String| discover::params_of(s).map(|p| Fit::assess(discover::estimated_bytes(p), &self.sys));
+        let fit = |s: &&String| discover::params_of(s).map(|p| Fit::assess(discover::estimated_bytes(p), &self.hw.info));
         let largest = |wanted: Fit| sizes.iter().rev().find(|s| fit(s) == Some(wanted));
         largest(Fit::Gpu).or_else(|| largest(Fit::Cpu)).or(sizes.first()).cloned()
     }
@@ -402,7 +390,7 @@ impl App {
     /// download progress twice).
     pub(crate) fn listed(&self, tag: &str) -> bool {
         let name = tag.split(':').next().unwrap_or(tag);
-        self.library.models.iter().chain(&self.unc.models).any(|m| m.name == name)
+        self.catalog.library.models.iter().chain(&self.catalog.unc.models).any(|m| m.name == name)
     }
 }
 

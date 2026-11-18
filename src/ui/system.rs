@@ -9,33 +9,34 @@ impl App {
     // ----------------------------------------------------------------- system
 
     pub(crate) fn system_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.show_system;
+        let mut open = self.view.show_system;
+        let mut refresh = false;
         egui::Window::new("System")
             .open(&mut open)
             .default_size([460.0, 320.0])
             .collapsible(false)
             .show(ctx, |ui| {
-                let s = self.sys.clone();
+                let s = &self.hw.info;
                 egui::Grid::new("sys_grid").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
-                    let row = |ui: &mut egui::Ui, k: &str, v: String| {
+                    let row = |ui: &mut egui::Ui, k: &str, v: &str| {
                         ui.label(RichText::new(k).color(Color32::GRAY));
                         ui.label(v);
                         ui.end_row();
                     };
-                    row(ui, "OS", s.os.clone());
-                    row(ui, "Kernel", s.kernel.clone());
-                    row(ui, "CPU", format!("{} ({} threads)", s.cpu, s.threads));
-                    row(ui, "RAM", format!("{} total · {} available", fmt_bytes(s.ram_total), fmt_bytes(s.ram_available)));
+                    row(ui, "OS", &s.os);
+                    row(ui, "Kernel", &s.kernel);
+                    row(ui, "CPU", &format!("{} ({} threads)", s.cpu, s.threads));
+                    row(ui, "RAM", &format!("{} total · {} available", fmt_bytes(s.ram_total), fmt_bytes(s.ram_available)));
                     if s.gpus.is_empty() {
-                        row(ui, "GPU", "none detected".into());
+                        row(ui, "GPU", "none detected");
                     }
                     for (i, g) in s.gpus.iter().enumerate() {
                         let vram = g.vram.map(fmt_bytes).unwrap_or_else(|| "shared memory".into());
-                        row(ui, &format!("GPU {i} ({})", g.vendor), format!("{} · {}", g.name, vram));
+                        row(ui, &format!("GPU {i} ({})", g.vendor), &format!("{} · {}", g.name, vram));
                     }
-                    row(ui, "Runtime", self.backend.endpoint());
-                    row(ui, "Models dir", s.models_dir.display().to_string());
-                    row(ui, "Disk", format!("{} free / {}", fmt_bytes(s.disk_free), fmt_bytes(s.disk_total)));
+                    row(ui, "Runtime", &self.backend.endpoint());
+                    row(ui, "Models dir", &s.models_dir.display().to_string());
+                    row(ui, "Disk", &format!("{} free / {}", fmt_bytes(s.disk_free), fmt_bytes(s.disk_total)));
                 });
                 ui.add_space(8.0);
                 ui.label(
@@ -47,7 +48,7 @@ impl App {
                     .color(Color32::GRAY),
                 );
                 if ui.button("Refresh").clicked() {
-                    self.refresh_system();
+                    refresh = true; // after the window: the hardware info is borrowed here
                 }
                 ui.separator();
                 ui.label(RichText::new("Preferences").strong());
@@ -80,18 +81,21 @@ impl App {
                     }
                 });
             });
-        self.show_system = open;
+        self.view.show_system = open;
+        if refresh {
+            self.refresh_system();
+        }
     }
 
     /// The current notice, stacked from `anchor` (see `notice_anchor`).
     pub(crate) fn toast(&mut self, ui: &mut egui::Ui, (anchor, dir): (Pos2, f32), now: f64) {
-        let Some((msg, start)) = &mut self.toast else { return };
+        let Some((msg, start)) = &mut self.view.toast else { return };
         if *start == 0.0 {
             *start = now;
         }
         let life = toast_seconds(msg);
         if now - *start > life {
-            self.toast = None;
+            self.view.toast = None;
             return;
         }
         ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(life - (now - *start))); // to hide it

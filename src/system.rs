@@ -202,11 +202,16 @@ pub enum Fit {
 
 impl Fit {
     pub fn assess(size: u64, sys: &SystemInfo) -> Fit {
-        // weights + KV cache / runtime overhead
-        let need = size as f64 * 1.2 + 0.5 * GB;
         if sys.disk_free > 0 && (sys.disk_free as f64) < size as f64 * 1.05 {
             return Fit::NoDisk;
         }
+        Fit::assess_installed(size, sys)
+    }
+
+    /// For a model already on disk: only memory matters.
+    pub fn assess_installed(size: u64, sys: &SystemInfo) -> Fit {
+        // weights + KV cache / runtime overhead
+        let need = size as f64 * 1.2 + 0.5 * GB;
         if sys.vram_total() as f64 >= need {
             return Fit::Gpu;
         }
@@ -253,5 +258,6 @@ mod tests {
         assert_eq!(Fit::assess(4 * GB as u64, &s), Fit::Gpu);
         s.disk_free = GB as u64;
         assert_eq!(Fit::assess(4 * GB as u64, &s), Fit::NoDisk);
+        assert_eq!(Fit::assess_installed(4 * GB as u64, &s), Fit::Gpu); // already downloaded
     }
 }
