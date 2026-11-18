@@ -9,11 +9,11 @@ It lets you browse, download and manage models from the GUI. Each model shows a 
 cargo run --release
 ```
 
-To add it to the desktop's application list, with its icon:
+To add it to the desktop's application list, with its icon (the `dist` profile builds a smaller binary, about 25 MB instead of 39, but takes a few minutes):
 
 ```sh
-cargo build --release
-install -Dm755 target/release/local-inference-ngyne ~/.local/bin/local-inference-ngyne
+cargo build --profile dist
+install -Dm755 target/dist/local-inference-ngyne ~/.local/bin/local-inference-ngyne
 install -Dm644 assets/icon.png ~/.local/share/icons/hicolor/256x256/apps/local-inference-ngyne.png
 install -Dm644 assets/local-inference-ngyne.desktop ~/.local/share/applications/local-inference-ngyne.desktop
 ```
