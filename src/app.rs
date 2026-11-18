@@ -163,6 +163,9 @@ pub(crate) struct App {
     /// Where notices start (next to the message box) and which way they
     /// stack: -1 upwards, 1 downwards. Set by `chat` each frame.
     pub(crate) notice_anchor: (Pos2, f32),
+    /// Conversation whose title is being edited in the history, and the text.
+    pub(crate) renaming: Option<(u64, String)>,
+    pub(crate) focus_rename: bool,
 }
 
 /// How often to check that the runtime still answers, in seconds.
@@ -226,6 +229,8 @@ impl App {
             focus_input: true,
             focus_search: false,
             notice_anchor: (Pos2::ZERO, -1.0),
+            renaming: None,
+            focus_rename: false,
             current: None,
             show_history: false,
             history_query: String::new(),

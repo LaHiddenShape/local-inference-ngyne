@@ -27,6 +27,9 @@ pub struct Conversation {
     /// Pinned conversations are listed first. Defaults to false for older files.
     #[serde(default)]
     pub pinned: bool,
+    /// The title was set by hand: keep it instead of the first message.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub renamed: bool,
 }
 
 pub fn now_ms() -> u64 {
@@ -281,6 +284,37 @@ pub fn save_settings(s: &Settings) -> io::Result<()> {
     write_atomic(&settings_file(), &serde_json::to_vec_pretty(s)?)
 }
 
+/// The conversation as Markdown, for export (reasoning left out).
+pub fn to_markdown(c: &Conversation) -> String {
+    let mut out = format!("# {}\n\n", c.title);
+    for m in &c.messages {
+        let who = match m.role {
+            Role::User => "You".to_string(),
+            _ => m.model.clone().unwrap_or_else(|| c.model.clone()),
+        };
+        out.push_str(&format!("### {who}\n\n"));
+        if !m.attachments.is_empty() {
+            let names: Vec<&str> = m.attachments.iter().map(|a| a.name.as_str()).collect();
+            out.push_str(&format!("*Attached: {}*\n\n", names.join(", ")));
+        }
+        if !m.content.trim().is_empty() {
+            out.push_str(m.content.trim());
+            out.push_str("\n\n");
+        }
+        if let Some(e) = &m.error {
+            out.push_str(&format!("*Error: {e}*\n\n"));
+        }
+    }
+    out
+}
+
+/// A file name made of the title's letters, digits, spaces, `-` and `_`.
+pub fn file_name_for(title: &str) -> String {
+    let clean: String = title.chars().map(|c| if c.is_alphanumeric() || " -_".contains(c) { c } else { '_' }).collect();
+    let clean: String = clean.trim().chars().take(60).collect();
+    if clean.is_empty() { "conversation".into() } else { clean }
+}
+
 /// Short title from the first user message.
 pub fn title_from(messages: &[ChatMessage]) -> String {
     let first = messages.iter().find(|m| m.role == Role::User).map(|m| m.content.as_str()).unwrap_or("New chat");
@@ -302,7 +336,15 @@ mod tests {
     }
 
     fn conv(id: u64, title: &str) -> Conversation {
-        Conversation { id, title: title.into(), model: "m".into(), updated: id, messages: vec![msg(Role::User, "hi")], pinned: false }
+        Conversation {
+            id,
+            title: title.into(),
+            model: "m".into(),
+            updated: id,
+            messages: vec![msg(Role::User, "hi")],
+            pinned: false,
+            renamed: false,
+        }
     }
 
     fn temp_base(tag: &str) -> PathBuf {
@@ -322,6 +364,20 @@ mod tests {
         assert_eq!(data_home_from(Some("".into()), home.clone()), PathBuf::from("/home/u/.local/share"));
         assert_eq!(data_home_from(Some("rel/dir".into()), home.clone()), PathBuf::from("/home/u/.local/share"));
         assert_eq!(data_home_from(None, home), PathBuf::from("/home/u/.local/share"));
+    }
+
+    #[test]
+    fn markdown_export_and_file_name() {
+        let mut c = conv(1, "Ownership: a/b?");
+        c.messages.push(ChatMessage { model: Some("qwen3:8b".into()), ..msg(Role::Assistant, "**Yes**") });
+        c.messages.push(ChatMessage { error: Some("out of memory".into()), ..msg(Role::Assistant, "") });
+        assert_eq!(
+            to_markdown(&c),
+            "# Ownership: a/b?\n\n### You\n\nhi\n\n### qwen3:8b\n\n**Yes**\n\n### m\n\n*Error: out of memory*\n\n"
+        );
+        assert_eq!(file_name_for("Ownership: a/b?"), "Ownership_ a_b_");
+        assert_eq!(file_name_for("///"), "___");
+        assert_eq!(file_name_for("  "), "conversation");
     }
 
     #[test]
