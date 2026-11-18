@@ -2,6 +2,7 @@
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, Vec2};
 
 use crate::app::App;
+use crate::ui::theme;
 use crate::background::CHAT_WIDTH;
 use crate::backend::{ChatMessage, Role, RuntimeStatus};
 use crate::ui::widgets::*;
@@ -15,10 +16,10 @@ impl App {
             ui.horizontal_centered(|ui| {
                 let (color, text) = match &self.status {
                     RuntimeStatus::Checking => (Color32::GRAY, "checking…".to_string()),
-                    RuntimeStatus::Starting => (Color32::from_rgb(220, 180, 60), "starting ollama…".into()),
-                    RuntimeStatus::Online { version } => (Color32::from_rgb(90, 200, 120), format!("ollama {version}")),
-                    RuntimeStatus::NotInstalled => (Color32::from_rgb(220, 80, 80), "ollama not installed".into()),
-                    RuntimeStatus::Offline { .. } => (Color32::from_rgb(220, 80, 80), "ollama offline".into()),
+                    RuntimeStatus::Starting => (theme::WARNING, "starting ollama…".into()),
+                    RuntimeStatus::Online { version } => (theme::SUCCESS, format!("ollama {version}")),
+                    RuntimeStatus::NotInstalled => (theme::DANGER, "ollama not installed".into()),
+                    RuntimeStatus::Offline { .. } => (theme::DANGER, "ollama offline".into()),
                 };
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
                 ui.painter().rect_filled(Rect::from_center_size(r.center(), Vec2::splat(8.0)), 0.0, color);
@@ -201,7 +202,7 @@ impl App {
                                             });
                                         }
                                         if let Some(e) = &m.error {
-                                            ui.label(RichText::new(format!("⚠ {e}")).small().color(Color32::from_rgb(220, 90, 90)));
+                                            ui.label(RichText::new(format!("⚠ {e}")).small().color(theme::DANGER));
                                         }
                                     });
                                 // gold accent bar along the left edge, exactly as tall as the block
@@ -209,7 +210,7 @@ impl App {
                                 ui.painter().rect_filled(
                                     Rect::from_min_max(r.left_top(), Pos2::new(r.left() + 3.0, r.bottom())),
                                     0.0,
-                                    Color32::from_rgb(205, 165, 70),
+                                    theme::ACCENT,
                                 );
                                 // actions under the reply
                                 if !waiting {
@@ -289,7 +290,7 @@ impl App {
                         }
                     }
                     let warn = |ui: &mut egui::Ui, text: String| {
-                        ui.label(RichText::new(text).small().color(Color32::from_rgb(220, 90, 90)));
+                        ui.label(RichText::new(text).small().color(theme::DANGER));
                     };
                     if no_vision {
                         warn(ui, "This model does not accept images (try gemma3 or llava)".into());
@@ -379,9 +380,9 @@ impl App {
         let used = usage.prompt_tokens + usage.completion_tokens;
         let frac = (used as f32 / limit as f32).clamp(0.0, 1.0);
         let color = if frac > 0.9 {
-            Color32::from_rgb(220, 90, 90)
+            theme::DANGER
         } else if frac > 0.75 {
-            Color32::from_rgb(220, 180, 60)
+            theme::WARNING
         } else {
             Color32::from_gray(110)
         };

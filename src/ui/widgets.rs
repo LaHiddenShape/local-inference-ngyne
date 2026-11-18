@@ -1,31 +1,9 @@
 
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
-
-/// Dark theme with square corners everywhere.
-pub(crate) fn square_visuals() -> egui::Visuals {
-    let mut v = egui::Visuals::dark();
-    v.window_corner_radius = egui::CornerRadius::ZERO;
-    v.menu_corner_radius = egui::CornerRadius::ZERO;
-    for w in [
-        &mut v.widgets.noninteractive,
-        &mut v.widgets.inactive,
-        &mut v.widgets.hovered,
-        &mut v.widgets.active,
-        &mut v.widgets.open,
-    ] {
-        w.corner_radius = egui::CornerRadius::ZERO;
-    }
-    v
-}
+use crate::ui::theme;
 
 pub(crate) const OLLAMA_DOWNLOAD_URL: &str = "https://ollama.com/download";
-
-pub(crate) const GOLD: (u8, u8, u8) = (225, 185, 85);
-
-pub(crate) fn gold(alpha: f32) -> Color32 {
-    Color32::from_rgba_unmultiplied(GOLD.0, GOLD.1, GOLD.2, (alpha.clamp(0.0, 1.0) * 255.0) as u8)
-}
 
 /// Small rectangle with a band of light sweeping across it (loading indicator).
 pub(crate) fn shimmer_bar(ui: &mut egui::Ui, t: f32) {
@@ -41,7 +19,7 @@ pub(crate) fn shimmer_bar(ui: &mut egui::Ui, t: f32) {
         let slice = Rect::from_min_max(Pos2::new(sx, r.top()), Pos2::new(sx + band / slices as f32 + 0.5, r.bottom()))
             .intersect(r);
         if slice.width() > 0.0 {
-            p.rect_filled(slice, 0.0, gold(a * a));
+            p.rect_filled(slice, 0.0, theme::accent_bright(a * a));
         }
     }
 }

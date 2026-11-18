@@ -1,6 +1,7 @@
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 
 use crate::app::App;
+use crate::ui::theme;
 use crate::discover::ListKind;
 
 impl App {
@@ -23,7 +24,7 @@ impl App {
                          Uncensored output can be wrong, offensive or harmful.",
                     )
                     .small()
-                    .color(Color32::from_rgb(220, 180, 60)),
+                    .color(theme::WARNING),
                 );
                 ui.separator();
                 egui::ScrollArea::vertical()
