@@ -83,6 +83,26 @@ pub fn estimate_tokens(bytes: usize) -> u64 {
     bytes.div_ceil(4) as u64
 }
 
+/// Cheap identity of an attachment, to cache its preview: its name, size and
+/// both ends of its data (hashing a 20 MB image every frame would not be).
+pub fn fingerprint(a: &Attachment) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let data = match &a.data {
+        AttachmentData::Text(t) | AttachmentData::Image(t) => t.as_bytes(),
+    };
+    let ends = (&data[..data.len().min(1024)], &data[data.len().saturating_sub(1024)..]);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (&a.name, data.len(), ends).hash(&mut h);
+    h.finish()
+}
+
+/// Decodes a base64 image into a preview at most `max` pixels on each side.
+pub fn thumbnail(b64: &str, max: u32) -> Option<eframe::egui::ColorImage> {
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    let img = image::load_from_memory(&bytes).ok()?.thumbnail(max, max).to_rgba8();
+    Some(eframe::egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw()))
+}
+
 /// Base64 images to pass in the runtime's `images` field.
 pub fn images(attachments: &[Attachment]) -> Vec<&str> {
     attachments
@@ -120,5 +140,20 @@ mod tests {
         assert_eq!(prompt_len("summarize", &[t, i.clone()]), prompt.len());
         assert_eq!(images(&[i]).len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn previews_are_small_and_keyed_cheaply() {
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(400, 200, image::Rgba([200, 150, 60, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        let thumb = thumbnail(&b64, 64).unwrap();
+        assert_eq!(thumb.size, [64, 32]);
+        assert!(thumbnail("bm90IGFuIGltYWdl", 64).is_none()); // "not an image"
+        let a = Attachment { name: "a.png".into(), data: AttachmentData::Image(b64) };
+        assert_eq!(fingerprint(&a), fingerprint(&a.clone()));
+        assert_ne!(fingerprint(&a), fingerprint(&Attachment { name: "b.png".into(), ..a.clone() }));
     }
 }

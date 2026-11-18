@@ -166,6 +166,15 @@ pub(crate) struct App {
     /// Conversation whose title is being edited in the history, and the text.
     pub(crate) renaming: Option<(u64, String)>,
     pub(crate) focus_rename: bool,
+    /// Previews of image attachments, by `attach::fingerprint`.
+    pub(crate) thumbs: HashMap<u64, Thumb>,
+}
+
+pub(crate) enum Thumb {
+    Loading,
+    Ready(egui::TextureHandle),
+    /// Not a decodable image: shown by name only.
+    Failed,
 }
 
 /// How often to check that the runtime still answers, in seconds.
@@ -231,6 +240,7 @@ impl App {
             notice_anchor: (Pos2::ZERO, -1.0),
             renaming: None,
             focus_rename: false,
+            thumbs: HashMap::new(),
             current: None,
             show_history: false,
             history_query: String::new(),
@@ -250,7 +260,7 @@ impl App {
         self.chat_cancel.is_some()
     }
 
-    pub(crate) fn handle_events(&mut self) {
+    pub(crate) fn handle_events(&mut self, ctx: &egui::Context) {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
                 Event::Status(s) => self.status = s,
@@ -361,6 +371,13 @@ impl App {
                     }
                 }
                 Event::Notice(msg) => self.notify(&msg),
+                Event::Thumbnail { key, image } => {
+                    let thumb = match image {
+                        Some(img) => Thumb::Ready(ctx.load_texture(format!("thumb-{key}"), img, egui::TextureOptions::LINEAR)),
+                        None => Thumb::Failed,
+                    };
+                    self.thumbs.insert(key, thumb);
+                }
                 Event::Health(result) => match (result, &self.status) {
                     (Ok(version), RuntimeStatus::Online { .. } | RuntimeStatus::Offline { .. }) => {
                         // back after an outage (e.g. the service was restarted)
@@ -555,7 +572,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        self.handle_events();
+        self.handle_events(&ctx);
         self.shortcuts(&ctx);
         self.ensure_model_info();
         // remember the selected model across restarts
