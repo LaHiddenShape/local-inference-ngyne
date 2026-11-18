@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Local Inference
+Comment=Chat with local LLMs through Ollama
+Exec=local-inference-ngyne
+Icon=local-inference-ngyne
+Terminal=false
+Categories=Utility;
+StartupWMClass=local-inference-ngyne
