@@ -42,6 +42,12 @@ pub struct ChatMessage {
     /// When the message was written, in Unix seconds (0 for old history).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub time: u64,
+    /// Reasoning streamed by a thinking model, shown folded, never sent back.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub thinking: String,
+    /// Why the reply failed: shown apart from its text, never sent back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -72,11 +78,14 @@ pub enum Event {
     PullDone { model: String, error: Option<String> },
     Deleted { model: String, error: Option<String> },
     ChatToken(String),
+    /// A piece of the reasoning of a thinking model.
+    ChatThinking(String),
     ChatDone { error: Option<String>, usage: Option<Usage> },
     /// Result of a background hardware probe.
     System(Box<crate::system::SystemInfo>),
-    /// Maximum context length supported by a model, and whether it accepts images.
-    ModelInfo { model: String, context_length: Option<u64>, vision: bool },
+    /// Maximum context length supported by a model, whether it accepts images
+    /// and whether it can reason before answering.
+    ModelInfo { model: String, context_length: Option<u64>, vision: bool, thinking: bool },
     /// Files picked in the file dialog, loaded in the background.
     Attached(Vec<Result<crate::attach::Attachment, String>>),
     /// Uncensored models listed on ollama.com.
@@ -127,8 +136,9 @@ pub trait Backend: Send + Sync {
     fn refresh_models(&self);
     fn pull(&self, model: &str, cancel: Arc<AtomicBool>);
     fn delete(&self, model: &str);
-    /// Streams a reply. `num_ctx` is the context window to allocate (tokens).
-    fn chat(&self, model: &str, history: Vec<ChatMessage>, num_ctx: u64, cancel: Arc<AtomicBool>);
+    /// Streams a reply. `num_ctx` is the context window to allocate (tokens);
+    /// `think` asks a thinking model to stream its reasoning separately.
+    fn chat(&self, model: &str, history: Vec<ChatMessage>, num_ctx: u64, think: bool, cancel: Arc<AtomicBool>);
     /// Fetches model metadata (context length).
     fn model_info(&self, model: &str);
 }

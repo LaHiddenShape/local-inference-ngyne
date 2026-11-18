@@ -86,6 +86,8 @@ pub(crate) struct App {
     pub(crate) pending: Vec<Attachment>,
     /// Whether each model accepts images (from the runtime's capabilities).
     pub(crate) vision: HashMap<String, bool>,
+    /// Whether each model can stream its reasoning (the runtime's "thinking" capability).
+    pub(crate) thinks: HashMap<String, bool>,
     pub(crate) messages: Vec<ChatMessage>,
     pub(crate) chat_cancel: Option<Arc<AtomicBool>>,
 
@@ -174,6 +176,7 @@ impl App {
             input: String::new(),
             pending: Vec::new(),
             vision: HashMap::new(),
+            thinks: HashMap::new(),
             messages: Vec::new(),
             chat_cancel: None,
             show_models: false,
@@ -263,6 +266,11 @@ impl App {
                         last.content.push_str(&tok);
                     }
                 }
+                Event::ChatThinking(t) => {
+                    if let Some(last) = self.messages.last_mut() {
+                        last.thinking.push_str(&t);
+                    }
+                }
                 Event::ChatDone { error, usage } => {
                     if error.is_some() {
                         self.backend.check(); // the runtime may have gone away
@@ -270,9 +278,7 @@ impl App {
                     let stopped = self.chat_cancel.take().is_some_and(|c| c.load(Ordering::Relaxed));
                     if let Some(last) = self.messages.last_mut() {
                         last.stopped = stopped;
-                        if let Some(e) = error {
-                            last.content.push_str(&format!("\n\n[error: {e}]"));
-                        }
+                        last.error = error; // shown apart, never sent back to the model
                     }
                     if usage.is_some() {
                         self.usage = usage;
@@ -283,8 +289,9 @@ impl App {
                     self.sys = *info;
                     self.probing = false;
                 }
-                Event::ModelInfo { model, context_length, vision } => {
+                Event::ModelInfo { model, context_length, vision, thinking } => {
                     self.vision.insert(model.clone(), vision);
+                    self.thinks.insert(model.clone(), thinking);
                     self.ctx_limits.insert(model, context_length);
                 }
                 Event::Attached(results) => self.add_attachments(results),
@@ -383,7 +390,8 @@ impl App {
         self.chat_cancel = Some(cancel.clone());
         self.persist();
         let num_ctx = self.num_ctx(&model);
-        self.backend.chat(&model, history, num_ctx, cancel);
+        let think = self.thinks.get(&model).copied().unwrap_or(false);
+        self.backend.chat(&model, history, num_ctx, think, cancel);
     }
 
     /// Context window to request: the model's maximum, capped by the setting

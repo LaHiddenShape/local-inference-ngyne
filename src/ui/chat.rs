@@ -111,7 +111,11 @@ impl App {
                         if m.role == "assistant" {
                             prev_model = Some(model);
                         }
-                        let waiting = m.content.is_empty() && streaming && i == n - 1;
+                        // reasoning of a thinking model: its own field, or inline <think> tags
+                        let (inline_thinking, answer) =
+                            if m.role == "assistant" { split_thinking(&m.content) } else { ("", m.content.as_str()) };
+                        let thinking = if m.thinking.is_empty() { inline_thinking } else { m.thinking.as_str() };
+                        let waiting = answer.is_empty() && streaming && i == n - 1;
                         // messages far from the visible area are not laid out (parsing
                         // the Markdown is the costly part): their last height is reserved
                         let key = layout_key(m, width_bits, switched, waiting);
@@ -175,17 +179,29 @@ impl App {
                                         ui.set_width(ui.available_width());
                                         ui.label(RichText::new(model).small().monospace().color(Color32::from_gray(120)));
                                         ui.add_space(2.0);
+                                        if !thinking.is_empty() {
+                                            let title = if waiting { "Thinking…" } else { "Reasoning" };
+                                            egui::CollapsingHeader::new(RichText::new(title).small().color(Color32::from_gray(140)))
+                                                .id_salt(("thinking", m.time, i))
+                                                .show(ui, |ui| {
+                                                    ui.label(RichText::new(thinking.trim()).small().color(Color32::from_gray(150)));
+                                                });
+                                        }
                                         if waiting {
                                             shimmer_bar(ui, now);
-                                        } else {
+                                        } else if !answer.is_empty() {
                                             // markdown: headings, lists, tables, code blocks with highlighting
                                             ui.scope(|ui| {
                                                 ui.visuals_mut().override_text_color = Some(Color32::from_gray(225));
                                                 if let Some(body) = ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body) {
                                                     body.size = 15.0;
                                                 }
-                                                egui_commonmark::CommonMarkViewer::new().show(ui, &mut self.md_cache, text);
+                                                let markdown = keep_line_breaks(answer);
+                                                egui_commonmark::CommonMarkViewer::new().show(ui, &mut self.md_cache, &markdown);
                                             });
+                                        }
+                                        if let Some(e) = &m.error {
+                                            ui.label(RichText::new(format!("⚠ {e}")).small().color(Color32::from_rgb(220, 90, 90)));
                                         }
                                     });
                                 // gold accent bar along the left edge, exactly as tall as the block
@@ -202,8 +218,8 @@ impl App {
                                             egui::Button::new(RichText::new(t).small().monospace().color(Color32::from_gray(130)))
                                                 .frame(false)
                                         };
-                                        if ui.add(small("copy")).on_hover_text("Copy the reply as Markdown").clicked() {
-                                            copy = Some(m.content.clone());
+                                        if !answer.is_empty() && ui.add(small("copy")).on_hover_text("Copy the reply as Markdown").clicked() {
+                                            copy = Some(answer.to_string());
                                         }
                                         if i == n - 1 && !streaming && ui.add(small("regenerate")).on_hover_text("Ask again with the selected model").clicked() {
                                             regenerate = true;
@@ -389,6 +405,49 @@ impl App {
     }
 }
 
+/// Splits a reply that starts with `<think>…</think>` (models or runtimes that
+/// put the reasoning in the text) into the reasoning and the answer. While the
+/// closing tag has not arrived yet, everything is reasoning.
+fn split_thinking(content: &str) -> (&str, &str) {
+    let Some(rest) = content.trim_start().strip_prefix("<think>") else { return ("", content) };
+    match rest.split_once("</think>") {
+        Some((thinking, answer)) => (thinking, answer.trim_start()),
+        None => (rest, ""),
+    }
+}
+
+/// Markdown joins lines separated by a single newline into one paragraph, but
+/// replies often mean them as line breaks (poems, addresses, short lists
+/// without markers). Turns those into hard breaks, outside fenced code.
+fn keep_line_breaks(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains('\n') {
+        return text.into();
+    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out = String::with_capacity(text.len() + lines.len() * 2);
+    let mut fence: Option<&str> = None;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        let is_fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
+        if is_fence {
+            match fence {
+                None => fence = Some(&trimmed[..3]),
+                Some(f) if trimmed.starts_with(f) => fence = None,
+                Some(_) => {}
+            }
+        }
+        out.push_str(line);
+        if let Some(next) = lines.get(i + 1) {
+            let in_code = fence.is_some() || is_fence;
+            if !in_code && !line.trim().is_empty() && !next.trim().is_empty() && !line.ends_with("  ") {
+                out.push_str("  ");
+            }
+            out.push('\n');
+        }
+    }
+    out.into()
+}
+
 /// "950", "17.4k", or "8K" for window sizes (multiples of 1024).
 fn short_tokens(n: u64) -> String {
     if n >= 1024 && n % 1024 == 0 {
@@ -404,7 +463,8 @@ fn short_tokens(n: u64) -> String {
 fn layout_key(m: &ChatMessage, width_bits: u32, switched: bool, waiting: bool) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (width_bits, m.content.len(), m.attachments.len(), m.time, m.stopped, switched, waiting, &m.role).hash(&mut h);
+    (width_bits, m.content.len(), m.thinking.len(), m.attachments.len(), m.time, m.stopped, m.error.is_some()).hash(&mut h);
+    (switched, waiting, &m.role).hash(&mut h);
     h.finish()
 }
 
@@ -443,5 +503,28 @@ fn fmt_time(secs: u64) -> String {
         format!("{:02}/{:02} {hm}", tm.tm_mday, tm.tm_mon + 1)
     } else {
         format!("{:02}/{:02}/{} {hm}", tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_reasoning_is_split_from_the_answer() {
+        assert_eq!(split_thinking("hello"), ("", "hello"));
+        assert_eq!(split_thinking("<think>hmm</think>\n\nAnswer"), ("hmm", "Answer"));
+        assert_eq!(split_thinking("<think>still thinking"), ("still thinking", ""));
+    }
+
+    #[test]
+    fn single_newlines_become_hard_breaks_outside_code() {
+        assert_eq!(keep_line_breaks("one line"), "one line");
+        assert_eq!(keep_line_breaks("Sand stairs\nkings asleep"), "Sand stairs  \nkings asleep");
+        // paragraphs and fenced code are left alone
+        assert_eq!(keep_line_breaks("a\n\nb"), "a\n\nb");
+        let code = "```rust\nlet a = 1;\nlet b = 2;\n```\ntext";
+        assert_eq!(keep_line_breaks(code), code);
+        assert_eq!(keep_line_breaks("x\n```\ny\n```"), "x  \n```\ny\n```");
     }
 }
