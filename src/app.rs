@@ -7,7 +7,7 @@ use eframe::egui::{self, Color32, Rect, RichText, Vec2};
 
 use crate::background::{draw_background, next_change};
 use crate::backend::ollama::{url_from_env, Ollama};
-use crate::backend::{Usage, Backend, ChatMessage, Event, InstalledModel, RuntimeStatus, Sink};
+use crate::backend::{Backend, ChatMessage, Event, InstalledModel, Role, RuntimeStatus, Sink, Usage};
 use crate::attach::{estimate_tokens, prompt_len, Attachment};
 use crate::store::{self, Conversation};
 use crate::system::SystemInfo;
@@ -370,7 +370,7 @@ impl App {
         }
         self.input.clear();
         let attachments = std::mem::take(&mut self.pending);
-        self.messages.push(ChatMessage { attachments, ..ChatMessage::new("user", text) });
+        self.messages.push(ChatMessage { attachments, ..ChatMessage::new(Role::User, text) });
         self.ask();
     }
 
@@ -379,7 +379,7 @@ impl App {
         if self.streaming() || self.selected.is_none() {
             return;
         }
-        if self.messages.last().is_some_and(|m| m.role == "assistant") {
+        if self.messages.last().is_some_and(|m| m.role == Role::Assistant) {
             self.messages.pop();
             self.ask();
         }
@@ -389,7 +389,7 @@ impl App {
     fn ask(&mut self) {
         let Some(model) = self.selected.clone() else { return };
         let history = self.messages.clone();
-        self.messages.push(ChatMessage { model: Some(model.clone()), ..ChatMessage::new("assistant", "") });
+        self.messages.push(ChatMessage { model: Some(model.clone()), ..ChatMessage::new(Role::Assistant, "") });
         let cancel = Arc::new(AtomicBool::new(false));
         self.chat_cancel = Some(cancel.clone());
         self.persist();

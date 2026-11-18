@@ -14,7 +14,7 @@ use reqwest::blocking::Client;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{Backend, ChatMessage, Event, InstalledModel, RuntimeStatus, Sink, Usage};
+use super::{Backend, ChatMessage, Event, InstalledModel, Role, RuntimeStatus, Sink, Usage};
 
 pub const DEFAULT_URL: &str = "http://127.0.0.1:11434";
 
@@ -435,7 +435,7 @@ impl Backend for Ollama {
             // inlined; replies that failed before writing anything are left out
             let messages: Vec<_> = history
                 .iter()
-                .filter(|m| !(m.role == "assistant" && m.content.is_empty()))
+                .filter(|m| !(m.role == Role::Assistant && m.content.is_empty()))
                 .map(|m| {
                     let mut msg = json!({ "role": m.role, "content": prompt_with_files(&m.content, &m.attachments) });
                     let imgs = images(&m.attachments);
@@ -523,7 +523,7 @@ mod tests {
         let models = o.list_models().expect("list");
         println!("installed: {:?}", models.iter().map(|m| &m.name).collect::<Vec<_>>());
         let smallest = models.iter().min_by_key(|m| m.size).expect("no model installed");
-        let msg = ChatMessage::new("user", "Reply with one word: hello");
+        let msg = ChatMessage::new(Role::User, "Reply with one word: hello");
         o.chat(&smallest.name, vec![msg], 4096, false, Arc::new(AtomicBool::new(false)));
         let mut out = String::new();
         loop {
@@ -541,7 +541,7 @@ mod tests {
 
         // Stop: the request is dropped at once and the reply ends without error
         let cancel = Arc::new(AtomicBool::new(false));
-        let long = ChatMessage::new("user", "Count from 1 to 300, one number per line.");
+        let long = ChatMessage::new(Role::User, "Count from 1 to 300, one number per line.");
         o.chat(&smallest.name, vec![long], 4096, false, cancel.clone());
         loop {
             match rx.recv_timeout(Duration::from_secs(120)).expect("timeout") {
