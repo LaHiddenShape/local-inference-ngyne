@@ -1,3 +1,5 @@
+![local-inference-ngyne](assets/banner.png)
+
 # local-inference-ngyne
 
 A native Linux desktop app, written in Rust with egui, for chatting with local LLMs through Ollama.
