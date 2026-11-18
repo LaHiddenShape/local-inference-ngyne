@@ -118,7 +118,14 @@ pub(crate) struct App {
     pub(crate) md_cache: egui_commonmark::CommonMarkCache,
     /// Recently deleted conversation, its former position and when the undo bar appeared.
     pub(crate) undo_delete: Option<(Conversation, usize, f64)>,
+    /// Saves conversations on a background thread.
+    pub(crate) writer: store::Writer,
+    /// When the runtime was last checked (app time, seconds).
+    pub(crate) last_health: f64,
 }
+
+/// How often to check that the runtime still answers, in seconds.
+const HEALTH_INTERVAL: f64 = 10.0;
 
 /// Upper bound for the context window we request.
 const MAX_NUM_CTX: u64 = 8192;
@@ -135,6 +142,11 @@ impl App {
         sink.probe_system();
         let backend = Ollama::new(&url_from_env(), sink.clone());
         backend.ensure_running();
+        let loaded = store::load();
+        let writer = {
+            let sink = sink.clone();
+            store::Writer::spawn(move |e| sink.send(Event::Notice(e)))
+        };
         Self {
             backend: Box::new(backend),
             rx,
@@ -162,8 +174,10 @@ impl App {
             unc: BrowserState::default(),
             library: BrowserState::default(),
             remote_details: HashMap::new(),
-            toast: None,
-            conversations: store::load(),
+            toast: loaded.warning.map(|w| (w, 0.0)),
+            conversations: loaded.conversations,
+            writer,
+            last_health: 0.0,
             current: None,
             show_history: false,
             history_query: String::new(),
@@ -239,6 +253,9 @@ impl App {
                     }
                 }
                 Event::ChatDone { error, usage } => {
+                    if error.is_some() {
+                        self.backend.check(); // the runtime may have gone away
+                    }
                     let stopped = self.chat_cancel.take().is_some_and(|c| c.load(Ordering::Relaxed));
                     if let Some(last) = self.messages.last_mut() {
                         last.stopped = stopped;
@@ -275,6 +292,20 @@ impl App {
                 Event::RemoteDetails { tag, result } => {
                     self.remote_details.insert(tag, Some(result));
                 }
+                Event::Notice(msg) => self.notify(&msg),
+                Event::Health(result) => match (result, &self.status) {
+                    (Ok(version), RuntimeStatus::Online { .. } | RuntimeStatus::Offline { .. }) => {
+                        // back after an outage (e.g. the service was restarted)
+                        if matches!(self.status, RuntimeStatus::Offline { .. }) {
+                            self.backend.refresh_models();
+                        }
+                        self.status = RuntimeStatus::Online { version };
+                    }
+                    (Err(e), RuntimeStatus::Online { .. }) => {
+                        self.status = RuntimeStatus::Offline { error: format!("Ollama stopped responding: {e}") };
+                    }
+                    _ => {} // still down, or a start is in progress
+                },
             }
         }
     }
@@ -422,6 +453,12 @@ impl eframe::App for App {
             let _ = store::save_settings(&self.settings);
         }
         let now = ctx.input(|i| i.time);
+        // notice when the runtime stops or comes back
+        let settled = matches!(self.status, RuntimeStatus::Online { .. } | RuntimeStatus::Offline { .. });
+        if settled && now - self.last_health > HEALTH_INTERVAL {
+            self.last_health = now;
+            self.backend.check();
+        }
         // background animation: ~20 fps is enough; streaming events and user
         // input trigger extra repaints on their own
         if self.streaming() {
@@ -457,5 +494,10 @@ impl eframe::App for App {
         self.models_window(&ctx);
         self.system_window(&ctx);
         self.uncensored_window(&ctx);
+    }
+
+    fn on_exit(&mut self) {
+        self.writer.close(); // finish pending history writes
+        self.backend.shutdown(); // clean stop of an `ollama serve` we started
     }
 }

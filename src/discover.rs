@@ -163,7 +163,7 @@ fn save_cache(kind: ListKind, models: &[RemoteModel]) {
 
 pub fn client() -> Client {
     Client::builder()
-        .user_agent("Mozilla/5.0 (local-inference-ui)")
+        .user_agent(format!("Mozilla/5.0 ({})", crate::APP_ID))
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(20))
         .build()

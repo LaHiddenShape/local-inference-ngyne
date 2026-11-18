@@ -1,8 +1,9 @@
 //! Ollama HTTP API client (https://github.com/ollama/ollama/blob/main/docs/api.md).
 
 use crate::attach::{images, prompt_with_files};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -155,6 +156,101 @@ impl Ollama {
         }
         Ok(())
     }
+
+    /// Polls until the server answers (Online) or fails (Offline), 20 s at most.
+    fn wait_online(&self) {
+        let start = Instant::now();
+        let mut last_err = String::new();
+        while start.elapsed() < Duration::from_secs(20) {
+            match self.version() {
+                Ok(version) => {
+                    self.sink.send(Event::Status(RuntimeStatus::Online { version }));
+                    self.refresh_models();
+                    return;
+                }
+                Err(e) => last_err = e,
+            }
+            // our server already gave up (e.g. port in use): no point in waiting
+            if let Some(error) = self.reap_child() {
+                self.sink.send(Event::Status(RuntimeStatus::Offline { error }));
+                return;
+            }
+            thread::sleep(Duration::from_millis(300));
+        }
+        let error = match last_log_line(&log_path()) {
+            Some(line) => format!("{last_err} ({line})"),
+            None => last_err,
+        };
+        self.sink.send(Event::Status(RuntimeStatus::Offline { error }));
+    }
+
+    /// If the server we spawned has exited, reaps it and says why.
+    fn reap_child(&self) -> Option<String> {
+        let mut guard = self.child.lock().unwrap();
+        let status = guard.as_mut()?.try_wait().ok()??;
+        *guard = None;
+        drop(guard);
+        let why = last_log_line(&log_path()).map(|l| format!(": {l}")).unwrap_or_default();
+        Some(format!("ollama serve exited ({status}){why}"))
+    }
+
+    /// Runs on the thread that spawned the server until it stops: the kernel
+    /// sends PR_SET_PDEATHSIG when the *spawning thread* exits, so this thread
+    /// must outlive the server. Also reaps it and reports if it dies.
+    fn watch_child(&self) {
+        loop {
+            thread::sleep(Duration::from_millis(500));
+            if self.child.lock().unwrap().is_none() {
+                return; // stopped by `shutdown`, or already reaped
+            }
+            if let Some(error) = self.reap_child() {
+                self.sink.send(Event::Status(RuntimeStatus::Offline { error }));
+                return;
+            }
+        }
+    }
+}
+
+/// Output of the `ollama serve` we spawn, kept to explain failures.
+fn log_path() -> PathBuf {
+    crate::store::data_dir().join("ollama-serve.log")
+}
+
+/// Stdout and stderr redirected to a fresh log file (null if it cannot be created).
+fn log_stdio(path: &Path) -> (Stdio, Stdio) {
+    let file = path.parent().map(std::fs::create_dir_all).transpose().and_then(|_| std::fs::File::create(path));
+    match file.and_then(|f| Ok((f.try_clone()?, f))) {
+        Ok((out, err)) => (out.into(), err.into()),
+        Err(_) => (Stdio::null(), Stdio::null()),
+    }
+}
+
+/// Last non-empty line of the log (read from its tail only).
+fn last_log_line(path: &Path) -> Option<String> {
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(4096))).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let line = text.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
+    Some(line.chars().take(300).collect())
+}
+
+/// Asks the server to stop (on SIGTERM Ollama unloads its models and stops
+/// its runner processes), then kills it if it is still there after 5 s.
+fn terminate(child: &mut Child) {
+    // SAFETY: plain syscall; the child is not reaped yet, so its pid is still ours
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Ok(Some(_)) = child.try_wait() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn api_error(body: &str) -> Option<String> {
@@ -178,9 +274,18 @@ impl Backend for Ollama {
                 me.refresh_models();
                 return;
             }
+            // the server we spawned on a previous attempt may still be starting:
+            // wait for it instead of starting a second one
+            let ours_alive = me.child.lock().unwrap().as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)));
+            if ours_alive {
+                me.sink.send(Event::Status(RuntimeStatus::Starting));
+                me.wait_online();
+                return;
+            }
             // not reachable: try to start it ourselves
+            let (stdout, stderr) = log_stdio(&log_path());
             let mut cmd = Command::new("ollama");
-            cmd.arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            cmd.arg("serve").stdin(Stdio::null()).stdout(stdout).stderr(stderr);
             // Linux: have the kernel stop the server if this app dies (even on a crash)
             // SAFETY: prctl is async-signal-safe and touches no shared state.
             unsafe {
@@ -204,31 +309,20 @@ impl Backend for Ollama {
                 Ok(c) => *me.child.lock().unwrap() = Some(c),
             }
             me.sink.send(Event::Status(RuntimeStatus::Starting));
-            let start = Instant::now();
-            let mut last_err = String::new();
-            let mut online = false;
-            while start.elapsed() < Duration::from_secs(20) {
-                match me.version() {
-                    Ok(version) => {
-                        me.sink.send(Event::Status(RuntimeStatus::Online { version }));
-                        me.refresh_models();
-                        online = true;
-                        break;
-                    }
-                    Err(e) => last_err = e,
-                }
-                thread::sleep(Duration::from_millis(300));
-            }
-            if !online {
-                me.sink.send(Event::Status(RuntimeStatus::Offline { error: last_err }));
-            }
-            // PR_SET_PDEATHSIG fires when the *spawning thread* exits, so this
-            // thread must outlive the server.
-            drop(me);
-            loop {
-                thread::park();
-            }
+            me.wait_online();
+            me.watch_child();
         });
+    }
+
+    fn check(&self) {
+        self.spawn(|me| me.sink.send(Event::Health(me.version())));
+    }
+
+    fn shutdown(&self) {
+        let child = self.child.lock().unwrap().take();
+        if let Some(mut c) = child {
+            terminate(&mut c);
+        }
     }
 
     fn refresh_models(&self) {
@@ -347,10 +441,7 @@ impl Backend for Ollama {
 impl Drop for Ollama {
     fn drop(&mut self) {
         if self.owner {
-            if let Some(mut c) = self.child.lock().unwrap().take() {
-                let _ = c.kill();
-                let _ = c.wait();
-            }
+            self.shutdown();
         }
     }
 }
@@ -413,16 +504,36 @@ mod url_tests {
     }
 }
 
+/// These tests spawn a fake `ollama`, found first in PATH, from FAKE_OLLAMA_DIR:
+///
+/// ```sh
+/// #!/bin/sh
+/// echo $$ > "$FAKE_OLLAMA_DIR/pid"
+/// if [ "$(cat "$FAKE_OLLAMA_DIR/mode")" = fail ]; then
+///   echo "Error: listen tcp 127.0.0.1:11434: bind: address already in use" >&2; exit 1
+/// fi
+/// trap 'echo term > "$FAKE_OLLAMA_DIR/signal"; exit 0' TERM
+/// while :; do sleep 0.1; done
+/// ```
+///
+/// `FAKE_OLLAMA_DIR=d PATH=d:$PATH XDG_DATA_HOME=$(mktemp -d) cargo test -- --ignored --test-threads=1 spawn_tests`
 #[cfg(test)]
 mod spawn_tests {
     use super::*;
 
-    /// Uses a fake `ollama` script from FAKE_OLLAMA_DIR: checks the spawned
-    /// server survives its spawning thread and dies with the app.
+    fn fake(mode: &str) -> String {
+        let dir = std::env::var("FAKE_OLLAMA_DIR").unwrap();
+        std::fs::write(format!("{dir}/mode"), mode).unwrap();
+        let _ = std::fs::remove_file(format!("{dir}/signal"));
+        dir
+    }
+
+    /// The spawned server survives its spawning thread and is stopped with
+    /// SIGTERM (a clean shutdown) when the app goes away.
     #[test]
     #[ignore]
     fn spawned_server_lives_until_app_drop() {
-        let dir = std::env::var("FAKE_OLLAMA_DIR").unwrap();
+        let dir = fake("serve");
         let (tx, _rx) = std::sync::mpsc::channel();
         let o = Ollama::new("http://127.0.0.1:1", Sink::new(tx, eframe::egui::Context::default()));
         o.ensure_running();
@@ -430,8 +541,27 @@ mod spawn_tests {
         let pid = std::fs::read_to_string(format!("{dir}/pid")).unwrap().trim().to_string();
         assert!(std::path::Path::new(&format!("/proc/{pid}")).exists(), "server died too early");
         drop(o);
-        thread::sleep(Duration::from_millis(300));
         let alive = std::fs::read_to_string(format!("/proc/{pid}/stat")).map(|s| !s.contains(") Z")).unwrap_or(false);
         assert!(!alive, "server still running after drop");
+        assert_eq!(std::fs::read_to_string(format!("{dir}/signal")).unwrap().trim(), "term", "not stopped with SIGTERM");
+    }
+
+    /// A server that exits right away is reported at once, with its last log line.
+    #[test]
+    #[ignore]
+    fn early_server_exit_is_reported_with_its_log() {
+        fake("fail");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let o = Ollama::new("http://127.0.0.1:1", Sink::new(tx, eframe::egui::Context::default()));
+        let start = Instant::now();
+        o.ensure_running();
+        let error = loop {
+            match rx.recv_timeout(Duration::from_secs(5)).expect("no Offline status in time") {
+                Event::Status(RuntimeStatus::Offline { error }) => break error,
+                _ => {}
+            }
+        };
+        assert!(start.elapsed() < Duration::from_secs(5));
+        assert!(error.contains("exited") && error.contains("address already in use"), "{error}");
     }
 }

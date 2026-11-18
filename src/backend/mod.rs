@@ -83,6 +83,10 @@ pub enum Event {
     Discovered { kind: crate::discover::ListKind, result: Result<Vec<crate::discover::RemoteModel>, String> },
     /// Registry details of one model tag.
     RemoteDetails { tag: String, result: Result<crate::discover::Details, String> },
+    /// A message for the user from a background task (e.g. a failed save).
+    Notice(String),
+    /// Result of a periodic health check: the runtime version, or the error.
+    Health(Result<String, String>),
 }
 
 /// Channel to the UI that also wakes it up.
@@ -116,6 +120,10 @@ pub trait Backend: Send + Sync {
     fn endpoint(&self) -> String;
     /// Detects the runtime and starts it if needed.
     fn ensure_running(&self);
+    /// Quick reachability check, answered with [`Event::Health`].
+    fn check(&self);
+    /// Stops the runtime if this app started it (waits for a clean exit).
+    fn shutdown(&self);
     fn refresh_models(&self);
     fn pull(&self, model: &str, cancel: Arc<AtomicBool>);
     fn delete(&self, model: &str);
