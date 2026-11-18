@@ -3,7 +3,7 @@ use eframe::egui::{self, Color32, Pos2, RichText, Vec2};
 
 use crate::app::App;
 use crate::ui::theme;
-use crate::backend::Role;
+use crate::backend::{Event, Role};
 use crate::store::{self, Conversation};
 
 const UNDO_SECONDS: f64 = 5.0;
@@ -19,15 +19,14 @@ impl App {
         let now = store::now_ms();
         let id = *self.current.get_or_insert(now);
         let model = self.selected.clone().unwrap_or_default();
-        let pinned = self.conversations.iter().any(|c| c.id == id && c.pinned);
-        let conv = Conversation {
-            pinned,
-            id,
-            title: store::title_from(&self.messages),
-            model,
-            updated: now,
-            messages: self.messages.clone(),
+        let existing = self.conversations.iter().find(|c| c.id == id);
+        let pinned = existing.is_some_and(|c| c.pinned);
+        let renamed = existing.is_some_and(|c| c.renamed);
+        let title = match existing {
+            Some(c) if c.renamed => c.title.clone(),
+            _ => store::title_from(&self.messages),
         };
+        let conv = Conversation { pinned, renamed, id, title, model, updated: now, messages: self.messages.clone() };
         self.conversations.retain(|c| c.id != id);
         self.writer.save(conv.clone());
         self.conversations.insert(0, conv);
@@ -111,6 +110,32 @@ impl App {
         (Pos2::new(anchor.x, anchor.y + dir * (bar.height() + 6.0)), dir)
     }
 
+    /// Sets a title by hand (an empty one goes back to the first message).
+    pub(crate) fn rename_conversation(&mut self, id: u64, title: &str) {
+        let Some(c) = self.conversations.iter_mut().find(|c| c.id == id) else { return };
+        let title = title.trim();
+        c.renamed = !title.is_empty();
+        c.title = if c.renamed { title.chars().take(80).collect() } else { store::title_from(&c.messages) };
+        self.writer.save(c.clone());
+    }
+
+    /// Saves the conversation as a Markdown file chosen in the system dialog.
+    pub(crate) fn export_conversation(&self, id: u64) {
+        let Some(c) = self.conversations.iter().find(|c| c.id == id) else { return };
+        let markdown = store::to_markdown(c);
+        let name = format!("{}.md", store::file_name_for(&c.title));
+        let sink = self.sink.clone();
+        std::thread::spawn(move || {
+            let dialog = rfd::FileDialog::new().set_title("Export conversation").set_file_name(&name).add_filter("Markdown", &["md"]);
+            let Some(path) = dialog.save_file() else { return };
+            let msg = match std::fs::write(&path, markdown) {
+                Ok(()) => format!("Exported to {}", path.display()),
+                Err(e) => format!("Could not export: {e}"),
+            };
+            sink.send(Event::Notice(msg));
+        });
+    }
+
     pub(crate) fn toggle_pin(&mut self, id: u64) {
         if let Some(c) = self.conversations.iter_mut().find(|c| c.id == id) {
             c.pinned = !c.pinned;
@@ -170,42 +195,88 @@ impl App {
         let matches = |c: &Conversation| {
             query.is_empty() || cache.get(&c.id).is_some_and(|(_, t)| t.contains(&query))
         };
-        let pinned: Vec<&Conversation> = self.conversations.iter().filter(|c| c.pinned && matches(c)).collect();
-        let others: Vec<&Conversation> = self.conversations.iter().filter(|c| !c.pinned && matches(c)).collect();
+        // pinned first, then the others by age (the list is sorted, newest first)
+        let midnight = local_midnight();
+        let mut groups: Vec<(&str, Vec<&Conversation>)> = Vec::new();
+        for c in self.conversations.iter().filter(|c| matches(c)) {
+            let group = if c.pinned { "PINNED" } else { age_group(c.updated / 1000, midnight) };
+            match groups.iter_mut().find(|(name, _)| *name == group) {
+                Some((_, list)) => list.push(c),
+                None => groups.push((group, vec![c])),
+            }
+        }
+        groups.sort_by_key(|(name, _)| GROUPS.iter().position(|g| g == name));
 
         let mut open = None;
         let mut delete = None;
         let mut pin = None;
+        let mut rename = None;
+        let mut renamed = None;
+        let mut export = None;
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            if pinned.is_empty() && others.is_empty() {
+            if groups.is_empty() {
                 ui.label(RichText::new("No match.").small().color(Color32::GRAY));
             }
-            for (title, list) in [("PINNED", &pinned), ("RECENT", &others)] {
-                if list.is_empty() {
-                    continue;
-                }
-                if !pinned.is_empty() {
-                    ui.label(RichText::new(title).small().monospace().color(Color32::from_gray(110)));
-                    ui.add_space(2.0);
-                }
-                for c in list.iter() {
+            for (group, list) in &groups {
+                ui.label(RichText::new(*group).small().monospace().color(Color32::from_gray(110)));
+                ui.add_space(2.0);
+                for c in list {
                     let active = self.current == Some(c.id);
                     ui.horizontal(|ui| {
                         // fixed width so long titles are cut with "…" instead of
                         // pushing the pin / delete buttons out of the panel
                         let w = (ui.available_width() - 48.0).max(40.0);
+                        if let Some((id, text)) = self.renaming.as_mut().filter(|(id, _)| *id == c.id) {
+                            // Enter or a click elsewhere saves, Esc cancels
+                            let edit = ui.add_sized(Vec2::new(w, 26.0), egui::TextEdit::singleline(text));
+                            if std::mem::take(&mut self.focus_rename) {
+                                edit.request_focus();
+                            }
+                            if edit.lost_focus() {
+                                let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                renamed = Some((*id, (!cancelled).then(|| text.clone())));
+                            }
+                            return;
+                        }
                         let resp = ui
                             .add_enabled_ui(!streaming, |ui| {
                                 ui.add_sized(
                                     Vec2::new(w, 26.0),
-                                    egui::Button::selectable(active, RichText::new(&c.title).size(13.0)).truncate(),
+                                    // the empty right text pushes the title to the left
+                                    egui::Button::selectable(active, RichText::new(&c.title).size(13.0)).truncate().right_text(""),
                                 )
                             })
                             .inner;
                         if resp.clicked() {
                             open = Some(c.id);
                         }
-                        resp.on_hover_text(format!("{} · {} messages", c.model, c.messages.len()));
+                        if resp.double_clicked() {
+                            rename = Some(c.id);
+                        }
+                        resp.context_menu(|ui| {
+                            if ui.button("Rename").clicked() {
+                                rename = Some(c.id);
+                                ui.close();
+                            }
+                            if ui.button(if c.pinned { "Unpin" } else { "Pin" }).clicked() {
+                                pin = Some(c.id);
+                                ui.close();
+                            }
+                            if ui.button("Export as Markdown…").clicked() {
+                                export = Some(c.id);
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.add_enabled(!streaming, egui::Button::new("Delete")).clicked() {
+                                delete = Some(c.id);
+                                ui.close();
+                            }
+                        });
+                        resp.on_hover_text(format!(
+                            "{} · {} messages\nDouble-click to rename, right-click for more",
+                            c.model,
+                            c.messages.len()
+                        ));
                         let star = if c.pinned { RichText::new("★").color(theme::ACCENT_BRIGHT) } else { RichText::new("☆") };
                         if ui.add(egui::Button::new(star).small().frame(false)).on_hover_text(if c.pinned { "Unpin" } else { "Pin" }).clicked() {
                             pin = Some(c.id);
@@ -227,5 +298,70 @@ impl App {
         if let Some(id) = delete {
             self.delete_conversation(id);
         }
+        if let Some(id) = export {
+            self.export_conversation(id);
+        }
+        if let Some(id) = rename {
+            let title = self.conversations.iter().find(|c| c.id == id).map(|c| c.title.clone()).unwrap_or_default();
+            self.renaming = Some((id, title));
+            self.focus_rename = true;
+        }
+        if let Some((id, title)) = renamed {
+            self.renaming = None;
+            if let Some(title) = title {
+                self.rename_conversation(id, &title);
+            }
+        }
+    }
+}
+
+/// History groups, in display order.
+const GROUPS: &[&str] = &["PINNED", "TODAY", "YESTERDAY", "PREVIOUS 7 DAYS", "PREVIOUS 30 DAYS", "OLDER"];
+
+/// Group of a conversation last updated at `secs`, given the last local midnight.
+fn age_group(secs: u64, midnight: u64) -> &'static str {
+    const DAY: u64 = 86_400;
+    if secs >= midnight {
+        "TODAY"
+    } else if secs >= midnight.saturating_sub(DAY) {
+        "YESTERDAY"
+    } else if secs >= midnight.saturating_sub(7 * DAY) {
+        "PREVIOUS 7 DAYS"
+    } else if secs >= midnight.saturating_sub(30 * DAY) {
+        "PREVIOUS 30 DAYS"
+    } else {
+        "OLDER"
+    }
+}
+
+/// Unix time of the last local midnight.
+fn local_midnight() -> u64 {
+    let now = (store::now_ms() / 1000) as libc::time_t;
+    // SAFETY: localtime_r and mktime only read and write the given struct
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&now, &mut tm);
+        tm.tm_hour = 0;
+        tm.tm_min = 0;
+        tm.tm_sec = 0;
+        tm.tm_isdst = -1; // let mktime work out daylight saving time
+        libc::mktime(&mut tm).max(0) as u64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conversations_are_grouped_by_age() {
+        let midnight = 1_000_000_000;
+        assert_eq!(age_group(midnight + 10, midnight), "TODAY");
+        assert_eq!(age_group(midnight - 10, midnight), "YESTERDAY");
+        assert_eq!(age_group(midnight - 3 * 86_400, midnight), "PREVIOUS 7 DAYS");
+        assert_eq!(age_group(midnight - 20 * 86_400, midnight), "PREVIOUS 30 DAYS");
+        assert_eq!(age_group(midnight - 400 * 86_400, midnight), "OLDER");
+        let now = store::now_ms() / 1000;
+        assert!(local_midnight() <= now && now - local_midnight() < 86_400 + 3600);
     }
 }
