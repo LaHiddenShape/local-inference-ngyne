@@ -4,6 +4,7 @@
 use eframe::egui::{self, Color32, RichText};
 
 use crate::app::{App, BrowserState, Filters, SortBy, Source};
+use crate::ui::theme;
 use crate::backend::{Event, RuntimeStatus};
 use crate::discover::{self, ListKind, RemoteModel};
 use crate::system::{fmt_bytes, Fit};
@@ -105,7 +106,7 @@ impl App {
             } else {
                 format!("⚠ Refresh failed, showing the previous list: {e}")
             };
-            ui.label(RichText::new(msg).small().color(Color32::from_rgb(220, 90, 90)));
+            ui.label(RichText::new(msg).small().color(theme::DANGER));
         }
         shown
     }
@@ -301,9 +302,9 @@ impl App {
                 ui.label(RichText::new(shown).strong().size(15.0)).on_hover_text(&m.name);
                 if kind == ListKind::Uncensored {
                     let (badge, color) = if m.official {
-                        ("official", Color32::from_rgb(90, 200, 120))
+                        ("official", theme::SUCCESS)
                     } else {
-                        ("community", Color32::from_rgb(220, 180, 60))
+                        ("community", theme::WARNING)
                     };
                     ui.label(RichText::new(badge).small().color(color));
                 }
@@ -360,7 +361,7 @@ impl App {
             });
             ui.horizontal(|ui| {
                 if self.is_installed(&tag) {
-                    ui.label(RichText::new("✓ Installed").color(Color32::from_rgb(90, 200, 120)));
+                    ui.label(RichText::new("✓ Installed").color(theme::SUCCESS));
                 } else if self.pulls.contains_key(&tag) || self.errors.contains_key(&tag) {
                     self.pull_status(ui, &tag);
                 } else {

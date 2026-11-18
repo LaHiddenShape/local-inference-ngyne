@@ -3,6 +3,7 @@ use std::sync::atomic::Ordering;
 use eframe::egui::{self, Color32, RichText};
 
 use crate::app::App;
+use crate::ui::theme;
 use crate::backend::{InstalledModel, RuntimeStatus};
 use crate::discover::{model_url, ListKind};
 use crate::system::{fmt_bytes, Fit, SystemInfo};
@@ -93,7 +94,7 @@ impl App {
     pub(crate) fn runtime_notice(&mut self, ui: &mut egui::Ui) {
         match self.status.clone() {
             RuntimeStatus::NotInstalled => {
-                ui.colored_label(Color32::from_rgb(220, 80, 80), "Ollama is not installed (the `ollama` command was not found).");
+                ui.colored_label(theme::DANGER, "Ollama is not installed (the `ollama` command was not found).");
                 ui.horizontal(|ui| {
                     ui.hyperlink_to(OLLAMA_DOWNLOAD_URL, OLLAMA_DOWNLOAD_URL);
                     self.copy_button(ui, OLLAMA_DOWNLOAD_URL);
@@ -104,7 +105,7 @@ impl App {
                 ui.separator();
             }
             RuntimeStatus::Offline { error } => {
-                ui.colored_label(Color32::from_rgb(220, 80, 80), format!("Ollama is not reachable: {error}"));
+                ui.colored_label(theme::DANGER, format!("Ollama is not reachable: {error}"));
                 if ui.button("Retry").clicked() {
                     self.backend.ensure_running();
                 }
@@ -143,9 +144,9 @@ impl App {
 
     pub(crate) fn fit_badge(ui: &mut egui::Ui, fit: Fit) {
         let color = match fit {
-            Fit::Gpu => Color32::from_rgb(90, 200, 120),
-            Fit::Cpu => Color32::from_rgb(220, 180, 60),
-            Fit::TooBig | Fit::NoDisk => Color32::from_rgb(220, 90, 90),
+            Fit::Gpu => theme::SUCCESS,
+            Fit::Cpu => theme::WARNING,
+            Fit::TooBig | Fit::NoDisk => theme::DANGER,
         };
         ui.label(RichText::new(fit.label()).small().color(color));
     }
@@ -163,7 +164,7 @@ impl App {
                 p.cancel.store(true, Ordering::Relaxed);
             }
         } else if let Some(e) = self.errors.get(tag).cloned() {
-            ui.colored_label(Color32::from_rgb(220, 90, 90), format!("⚠ {e}"));
+            ui.colored_label(theme::DANGER, format!("⚠ {e}"));
             if ui.small_button("Retry").clicked() {
                 self.start_pull(tag);
             }
@@ -197,7 +198,7 @@ impl App {
                     if ui.button("Cancel").clicked() {
                         self.confirm_delete = None;
                     }
-                    if ui.button(RichText::new("Confirm delete").color(Color32::from_rgb(230, 100, 100))).clicked() {
+                    if ui.button(RichText::new("Confirm delete").color(theme::DANGER)).clicked() {
                         self.backend.delete(&m.name);
                         self.confirm_delete = None;
                     }
@@ -205,7 +206,7 @@ impl App {
                     self.confirm_delete = Some(m.name.clone());
                 }
                 if active {
-                    ui.label(RichText::new("in use").small().color(Color32::from_rgb(90, 200, 120)));
+                    ui.label(RichText::new("in use").small().color(theme::SUCCESS));
                 } else if ui.small_button("Use").clicked() {
                     self.selected = Some(m.name.clone());
                 }
@@ -214,7 +215,7 @@ impl App {
             });
         });
         if let Some(e) = self.errors.get(&m.name) {
-            ui.colored_label(Color32::from_rgb(220, 90, 90), format!("⚠ {e}"));
+            ui.colored_label(theme::DANGER, format!("⚠ {e}"));
         }
     }
 }

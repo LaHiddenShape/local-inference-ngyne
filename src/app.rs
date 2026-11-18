@@ -145,7 +145,7 @@ const FALLBACK_NUM_CTX: u64 = 4096;
 
 impl App {
     pub(crate) fn new(ctx: egui::Context) -> Self {
-        ctx.set_visuals(square_visuals());
+        ctx.set_visuals(crate::ui::theme::visuals());
         install_fonts(&ctx);
         let (tx, rx) = mpsc::channel();
         let sink = Sink::new(tx, ctx);

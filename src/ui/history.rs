@@ -2,6 +2,7 @@
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
 
 use crate::app::App;
+use crate::ui::theme;
 use crate::backend::Role;
 use crate::store::{self, Conversation};
 
@@ -93,7 +94,7 @@ impl App {
                     let short: String = title.chars().take(28).collect();
                     ui.label(RichText::new(format!("Deleted “{short}”")).size(13.0).color(Color32::from_gray(15)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let b = egui::Button::new(RichText::new("Undo").strong().color(Color32::from_rgb(150, 110, 20))).frame(false);
+                        let b = egui::Button::new(RichText::new("Undo").strong().color(theme::ACCENT_ON_LIGHT)).frame(false);
                         if ui.add(b).clicked() {
                             undo = true;
                         }
@@ -198,7 +199,7 @@ impl App {
                             open = Some(c.id);
                         }
                         resp.on_hover_text(format!("{} · {} messages", c.model, c.messages.len()));
-                        let star = if c.pinned { RichText::new("★").color(Color32::from_rgb(225, 185, 85)) } else { RichText::new("☆") };
+                        let star = if c.pinned { RichText::new("★").color(theme::ACCENT_BRIGHT) } else { RichText::new("☆") };
                         if ui.add(egui::Button::new(star).small().frame(false)).on_hover_text(if c.pinned { "Unpin" } else { "Pin" }).clicked() {
                             pin = Some(c.id);
                         }
