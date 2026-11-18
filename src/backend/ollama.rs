@@ -1,12 +1,12 @@
 //! Ollama HTTP API client (https://github.com/ollama/ollama/blob/main/docs/api.md).
 
 use crate::attach::{images, prompt_with_files};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -43,6 +43,8 @@ pub fn url_from_env() -> String {
 pub struct Ollama {
     base: String,
     http: Client,
+    /// Async client for the cancellable streams (see [`runtime`]).
+    stream_http: reqwest::Client,
     sink: Sink,
     /// `ollama serve` process spawned by us, if any (killed on exit).
     child: Arc<Mutex<Option<Child>>>,
@@ -55,6 +57,7 @@ impl Clone for Ollama {
         Self {
             base: self.base.clone(),
             http: self.http.clone(),
+            stream_http: self.stream_http.clone(),
             sink: self.sink.clone(),
             child: self.child.clone(),
             owner: false,
@@ -65,11 +68,14 @@ impl Clone for Ollama {
 impl Ollama {
     pub fn new(base: &str, sink: Sink) -> Self {
         let http = Client::builder()
-            .timeout(None::<Duration>) // streams can last minutes
+            .timeout(None::<Duration>) // a model load can take a while
             .connect_timeout(Duration::from_secs(3))
             .build()
             .expect("http client");
-        Self { base: base.trim_end_matches('/').to_string(), http, sink, child: Arc::default(), owner: true }
+        // no overall timeout: streams can last minutes
+        let stream_http =
+            reqwest::Client::builder().connect_timeout(Duration::from_secs(3)).build().expect("http client");
+        Self { base: base.trim_end_matches('/').to_string(), http, stream_http, sink, child: Arc::default(), owner: true }
     }
 
     pub fn base_url(&self) -> &str {
@@ -124,7 +130,9 @@ impl Ollama {
     }
 
     /// POSTs `body` and calls `on_line` for each NDJSON line until it returns
-    /// false, the stream ends, or `cancel` is set.
+    /// false, the stream ends, or `cancel` is set. Cancelling drops the request
+    /// at once, even while waiting for the first token: closing the connection
+    /// makes Ollama stop the generation (or the download).
     fn stream(
         &self,
         path: &str,
@@ -132,29 +140,48 @@ impl Ollama {
         cancel: &AtomicBool,
         mut on_line: impl FnMut(serde_json::Value) -> Result<bool, String>,
     ) -> Result<(), String> {
-        let resp = self.http.post(self.url(path)).json(&body).send().map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            let code = resp.status();
-            let text = resp.text().unwrap_or_default();
-            return Err(api_error(&text).unwrap_or_else(|| format!("HTTP {code}")));
-        }
-        for line in BufReader::new(resp).lines() {
-            if cancel.load(Ordering::Relaxed) {
-                return Ok(()); // dropping the response closes the connection
+        runtime().block_on(async {
+            let request = self.stream_http.post(self.url(path)).json(&body).send();
+            let mut cancelled = std::pin::pin!(async {
+                while !cancel.load(Ordering::Relaxed) {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            });
+            let mut resp = tokio::select! {
+                r = request => r.map_err(|e| e.to_string())?,
+                _ = &mut cancelled => return Ok(()),
+            };
+            if !resp.status().is_success() {
+                let code = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(api_error(&text).unwrap_or_else(|| format!("HTTP {code}")));
             }
-            let line = line.map_err(|e| e.to_string())?;
-            if line.trim().is_empty() {
-                continue;
+            let mut pending = Vec::new();
+            loop {
+                let chunk = tokio::select! {
+                    c = resp.chunk() => c.map_err(|e| e.to_string())?,
+                    _ = &mut cancelled => return Ok(()),
+                };
+                let end = chunk.is_none();
+                pending.extend_from_slice(chunk.as_deref().unwrap_or_default());
+                // complete lines, plus the last one once the stream has ended
+                while let Some(line) = take_line(&mut pending, end) {
+                    if line.iter().all(u8::is_ascii_whitespace) {
+                        continue;
+                    }
+                    let v: serde_json::Value = serde_json::from_slice(&line).map_err(|e| e.to_string())?;
+                    if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+                        return Err(err.to_string());
+                    }
+                    if !on_line(v)? {
+                        return Ok(());
+                    }
+                }
+                if end {
+                    return Ok(());
+                }
             }
-            let v: serde_json::Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
-            if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
-                return Err(err.to_string());
-            }
-            if !on_line(v)? {
-                break;
-            }
-        }
-        Ok(())
+        })
     }
 
     /// Polls until the server answers (Online) or fails (Offline), 20 s at most.
@@ -208,6 +235,34 @@ impl Ollama {
                 return;
             }
         }
+    }
+}
+
+/// Runs the streaming requests (chat, pull) so they can be dropped the
+/// moment the user cancels.
+fn runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("ollama-stream")
+            .enable_all()
+            .build()
+            .expect("tokio runtime")
+    });
+    &RUNTIME
+}
+
+/// Removes and returns the next line of `buf`, or the remaining bytes when
+/// `end` is set (the stream is over and its last line had no newline).
+fn take_line(buf: &mut Vec<u8>, end: bool) -> Option<Vec<u8>> {
+    match buf.iter().position(|&b| b == b'\n') {
+        Some(i) => {
+            let mut line: Vec<u8> = buf.drain(..=i).collect();
+            line.pop();
+            Some(line)
+        }
+        None if end && !buf.is_empty() => Some(std::mem::take(buf)),
+        None => None,
     }
 }
 
@@ -485,6 +540,30 @@ mod tests {
             }
         }
         println!("{} -> {out:?}", smallest.name);
+
+        // Stop: the request is dropped at once and the reply ends without error
+        let cancel = Arc::new(AtomicBool::new(false));
+        let long = ChatMessage::new("user", "Count from 1 to 300, one number per line.");
+        o.chat(&smallest.name, vec![long], 4096, false, cancel.clone());
+        loop {
+            match rx.recv_timeout(Duration::from_secs(120)).expect("timeout") {
+                Event::ChatToken(_) => break,
+                Event::ChatDone { error, .. } => panic!("ended before the first token: {error:?}"),
+                _ => {}
+            }
+        }
+        cancel.store(true, Ordering::Relaxed);
+        let stopped_at = Instant::now();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)).expect("no ChatDone after Stop") {
+                Event::ChatDone { error, .. } => {
+                    assert!(error.is_none(), "{error:?}");
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(stopped_at.elapsed() < Duration::from_millis(500), "{:?}", stopped_at.elapsed());
         o.model_info(&smallest.name);
         match rx.recv_timeout(Duration::from_secs(10)).expect("timeout") {
             Event::ModelInfo { context_length, .. } => {
@@ -494,6 +573,21 @@ mod tests {
             _ => panic!("unexpected event"),
         }
         assert!(!out.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod line_tests {
+    use super::take_line;
+
+    #[test]
+    fn ndjson_lines_split_across_chunks() {
+        let mut buf = b"{\"a\":1}\n{\"b\"".to_vec();
+        assert_eq!(take_line(&mut buf, false), Some(b"{\"a\":1}".to_vec()));
+        assert_eq!(take_line(&mut buf, false), None); // incomplete, wait for more
+        buf.extend_from_slice(b":2}");
+        assert_eq!(take_line(&mut buf, true), Some(b"{\"b\":2}".to_vec())); // last line, no newline
+        assert_eq!(take_line(&mut buf, true), None);
     }
 }
 
