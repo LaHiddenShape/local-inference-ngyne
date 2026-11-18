@@ -18,7 +18,7 @@
 //!
 //! Results are cached on disk and shown while a refresh runs, or when offline.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -35,6 +35,8 @@ const KEYWORDS: &[&str] = &["uncensor", "abliterat", "dolphin", "heretic", "unfi
 const MAX_PAGES: usize = 60;
 /// Cache older than this is refreshed when the window opens.
 pub const CACHE_TTL_SECS: u64 = 24 * 3600;
+/// Registry details older than this are fetched again.
+const DETAILS_TTL_SECS: u64 = 7 * 24 * 3600;
 const REGISTRY: &str = "https://registry.ollama.ai/v2";
 const SITE: &str = "https://ollama.com";
 
@@ -125,7 +127,7 @@ fn repo_of(name: &str) -> String {
 }
 
 /// Registry facts about one tag.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Details {
     pub size: u64,
     pub context_length: Option<u64>,
@@ -138,7 +140,7 @@ struct Cache {
     models: Vec<RemoteModel>,
 }
 
-fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
@@ -161,13 +163,40 @@ fn save_cache(kind: ListKind, models: &[RemoteModel]) {
     }
 }
 
-pub fn client() -> Client {
-    Client::builder()
-        .user_agent(format!("Mozilla/5.0 ({})", crate::APP_ID))
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(20))
-        .build()
-        .expect("http client")
+fn details_cache_file() -> PathBuf {
+    crate::store::data_dir().join("details-cache.json")
+}
+
+/// Registry details fetched less than a week ago, by tag, with when they were fetched.
+pub fn load_details_cache() -> HashMap<String, (u64, Details)> {
+    let cached: HashMap<String, (u64, Details)> = std::fs::read_to_string(details_cache_file())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let now = now_secs();
+    cached.into_iter().filter(|(_, (at, _))| now.saturating_sub(*at) < DETAILS_TTL_SECS).collect()
+}
+
+pub fn save_details_cache(cached: &HashMap<String, (u64, Details)>) {
+    let _ = std::fs::create_dir_all(crate::store::data_dir());
+    let tmp = details_cache_file().with_extension("json.tmp");
+    if std::fs::write(&tmp, serde_json::to_vec(cached).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(tmp, details_cache_file());
+    }
+}
+
+/// One HTTP client for every request to ollama.com and the registry, so
+/// connections and TLS sessions are reused.
+pub fn client() -> &'static Client {
+    static CLIENT: LazyLock<Client> = LazyLock::new(|| {
+        Client::builder()
+            .user_agent(format!("Mozilla/5.0 ({})", crate::APP_ID))
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(20))
+            .build()
+            .expect("http client")
+    });
+    &CLIENT
 }
 
 // ------------------------------------------------------------------- listing

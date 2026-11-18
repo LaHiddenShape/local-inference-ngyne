@@ -82,9 +82,9 @@ impl App {
                             .color(Color32::GRAY),
                     );
                     ui.add_space(4.0);
-                    self.browser_header(ui, ListKind::Library);
+                    let shown = self.browser_header(ui, ListKind::Library);
                     ui.add_space(4.0);
-                    self.browser_list(ui, ListKind::Library);
+                    self.browser_list(ui, ListKind::Library, &shown);
                 });
             });
         self.show_models = open;

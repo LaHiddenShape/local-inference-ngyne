@@ -9,6 +9,11 @@ use crate::discover::{self, ListKind, RemoteModel};
 use crate::system::{fmt_bytes, Fit};
 
 const PAGE: usize = 40;
+/// Registry lookups running at the same time.
+const MAX_DETAIL_REQUESTS: usize = 4;
+
+/// Rows passing the filters: index in the list and the size tags allowed.
+pub(crate) type Shown = Vec<(usize, Vec<String>)>;
 
 impl App {
     pub(crate) fn browser(&self, kind: ListKind) -> &BrowserState {
@@ -43,8 +48,11 @@ impl App {
         if b.limit == 0 {
             b.limit = PAGE;
         }
-        let stale = now_secs().saturating_sub(b.fetched_at) > discover::CACHE_TTL_SECS;
-        if b.models.is_empty() || stale {
+        let stale = discover::now_secs().saturating_sub(b.fetched_at) > discover::CACHE_TTL_SECS;
+        let refetch = b.models.is_empty() || stale;
+        // failed lookups get another chance
+        self.remote_details.retain(|_, d| !matches!(d, Some(Err(_))));
+        if refetch {
             self.discover(kind);
         }
     }
@@ -57,13 +65,14 @@ impl App {
         b.discovering = true;
         let sink = self.sink.clone();
         std::thread::spawn(move || {
-            let result = discover::fetch(&discover::client(), kind);
+            let result = discover::fetch(discover::client(), kind);
             sink.send(Event::Discovered { kind, result });
         });
     }
 
-    /// Search box, refresh button, filters and status line.
-    pub(crate) fn browser_header(&mut self, ui: &mut egui::Ui, kind: ListKind) {
+    /// Search box, refresh button, filters and status line. Returns the rows
+    /// to show, computed once per frame for the header and the list.
+    pub(crate) fn browser_header(&mut self, ui: &mut egui::Ui, kind: ListKind) -> Shown {
         ui.horizontal(|ui| {
             let b = self.browser_mut(kind);
             ui.add(egui::TextEdit::singleline(&mut b.filter).hint_text("Filter by name or description").desired_width(240.0));
@@ -78,15 +87,16 @@ impl App {
             });
         });
         self.filters_ui(ui, kind);
+        let shown = self.filtered(kind);
         let b = self.browser(kind);
         let total = b.models.len();
-        let mut line = format!("{} shown · {total} models", self.filtered(kind).len());
+        let mut line = format!("{} shown · {total} models", shown.len());
         if kind == ListKind::Uncensored {
             let official = b.models.iter().filter(|m| m.official).count();
             line.push_str(&format!(" ({official} official, {} community)", total - official));
         }
         if b.fetched_at > 0 {
-            line.push_str(&format!(" · updated {}", ago(now_secs().saturating_sub(b.fetched_at))));
+            line.push_str(&format!(" · updated {}", ago(discover::now_secs().saturating_sub(b.fetched_at))));
         }
         ui.label(RichText::new(line).small().color(Color32::GRAY));
         if let Some(e) = &b.error {
@@ -97,10 +107,11 @@ impl App {
             };
             ui.label(RichText::new(msg).small().color(Color32::from_rgb(220, 90, 90)));
         }
+        shown
     }
 
     /// The filtered rows, paginated with "Show more".
-    pub(crate) fn browser_list(&mut self, ui: &mut egui::Ui, kind: ListKind) {
+    pub(crate) fn browser_list(&mut self, ui: &mut egui::Ui, kind: ListKind, shown: &Shown) {
         let b = self.browser(kind);
         if b.models.is_empty() {
             let msg = if b.discovering {
@@ -112,12 +123,13 @@ impl App {
             return;
         }
         let limit = b.limit;
-        let shown = self.filtered(kind);
         if shown.is_empty() {
             ui.label(RichText::new("No model matches the filters.").color(Color32::GRAY));
         }
-        for (m, sizes) in shown.iter().take(limit) {
-            self.remote_row(ui, kind, m, sizes);
+        for (i, sizes) in shown.iter().take(limit) {
+            // a copy of the drawn rows only (the row needs `&mut self`)
+            let m = self.browser(kind).models[*i].clone();
+            self.remote_row(ui, kind, &m, sizes);
         }
         if shown.len() > limit {
             ui.vertical_centered(|ui| {
@@ -128,19 +140,28 @@ impl App {
         }
     }
 
-    /// Registry details of `tag`, fetched once in the background.
-    fn remote_details(&mut self, tag: &str) -> Option<Result<discover::Details, String>> {
-        if let Some(d) = self.remote_details.get(tag) {
-            return d.clone();
+    /// Queues a registry lookup for `tag` unless it is known or pending. The
+    /// last requested goes first: those are the rows just scrolled into view.
+    fn request_details(&mut self, tag: &str) {
+        if self.remote_details.contains_key(tag) {
+            return;
         }
         self.remote_details.insert(tag.to_string(), None);
-        let sink = self.sink.clone();
-        let tag = tag.to_string();
-        std::thread::spawn(move || {
-            let result = discover::details(&discover::client(), &tag);
-            sink.send(Event::RemoteDetails { tag, result });
-        });
-        None
+        self.details_queue.push_front(tag.to_string());
+        self.pump_details();
+    }
+
+    /// Starts queued lookups, a few at a time.
+    pub(crate) fn pump_details(&mut self) {
+        while self.details_in_flight < MAX_DETAIL_REQUESTS {
+            let Some(tag) = self.details_queue.pop_front() else { break };
+            self.details_in_flight += 1;
+            let sink = self.sink.clone();
+            std::thread::spawn(move || {
+                let result = discover::details(discover::client(), &tag);
+                sink.send(Event::RemoteDetails { tag, result });
+            });
+        }
     }
 
     fn filters_ui(&mut self, ui: &mut egui::Ui, kind: ListKind) {
@@ -193,14 +214,14 @@ impl App {
     }
 
     /// Models passing the filters, each with the size tags it can be pulled in.
-    fn filtered(&self, kind: ListKind) -> Vec<(RemoteModel, Vec<String>)> {
+    fn filtered(&self, kind: ListKind) -> Shown {
         let b = self.browser(kind);
         let f = &b.filters;
         let text = b.filter.trim().to_lowercase();
         // while the hardware probe runs the memory is unknown: don't hide anything
         let fits = |bytes: u64| self.probing || matches!(Fit::assess(bytes, &self.sys), Fit::Gpu | Fit::Cpu);
-        let mut out: Vec<(RemoteModel, Vec<String>, Option<f64>)> = Vec::new();
-        for m in &b.models {
+        let mut out: Vec<(usize, Vec<String>, Option<f64>)> = Vec::new();
+        for (i, m) in b.models.iter().enumerate() {
             match f.source {
                 Source::Official if !m.official => continue,
                 Source::Community if m.official => continue,
@@ -210,11 +231,11 @@ impl App {
                 continue;
             }
             let details = match self.remote_details.get(&m.name) {
-                Some(Some(Ok(d))) => Some(d.clone()),
+                Some(Some(Ok(d))) => Some(d),
                 _ => None,
             };
             let has = |c: &str| m.capabilities.iter().any(|x| x == c);
-            if f.vision && !(has("vision") || details.as_ref().is_some_and(|d| d.vision)) {
+            if f.vision && !(has("vision") || details.is_some_and(|d| d.vision)) {
                 continue;
             }
             if (f.tools && !has("tools")) || (f.thinking && !has("thinking")) {
@@ -223,7 +244,7 @@ impl App {
             let params = m.params();
             let (sizes, smallest) = if params.is_empty() {
                 // no size tag on the site: use the registry size once loaded
-                match &details {
+                match details {
                     Some(d) => {
                         let approx = d.size as f64 / (0.6 * crate::system::GB);
                         if f.max_params.is_some_and(|max| approx > max * 1.15) || (f.fits && !fits(d.size)) {
@@ -246,11 +267,11 @@ impl App {
                 let smallest = ok.first().map(|x| x.1);
                 (ok.into_iter().map(|x| x.0).collect(), smallest)
             };
-            out.push((m.clone(), sizes, smallest));
+            out.push((i, sizes, smallest));
         }
         match f.sort {
             SortBy::Downloads => {} // already ordered by downloads
-            SortBy::Name => out.sort_by(|a, b| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase())),
+            SortBy::Name => out.sort_by_cached_key(|row| b.models[row.0].name.to_lowercase()),
             SortBy::Smallest => out.sort_by(|a, b| match (a.2, b.2) {
                 (Some(x), Some(y)) => x.total_cmp(&y),
                 (Some(_), None) => std::cmp::Ordering::Less,
@@ -258,7 +279,7 @@ impl App {
                 (None, None) => std::cmp::Ordering::Equal,
             }),
         }
-        out.into_iter().map(|(m, s, _)| (m, s)).collect()
+        out.into_iter().map(|(i, s, _)| (i, s)).collect()
     }
 
     /// `sizes`: the size tags allowed by the filters (empty if the site lists none).
@@ -270,9 +291,10 @@ impl App {
             Some(s) => format!("{}:{s}", m.name),
             None => m.name.clone(),
         };
-        let details = self.remote_details(&tag);
+        let details = self.remote_details.get(&tag).cloned().flatten();
         let url = m.url();
-        egui::Frame::new().fill(Color32::from_rgb(20, 20, 24)).inner_margin(8.0).show(ui, |ui| {
+        let mut retry = false;
+        let row = egui::Frame::new().fill(Color32::from_rgb(20, 20, 24)).inner_margin(8.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 let shown: String = m.name.chars().take(48).collect();
@@ -328,6 +350,9 @@ impl App {
                     }
                 };
                 ui.label(RichText::new(info).small().color(Color32::GRAY));
+                if matches!(details, Some(Err(_))) && ui.small_button("Retry").clicked() {
+                    retry = true;
+                }
             });
             ui.horizontal(|ui| {
                 ui.hyperlink_to(RichText::new(&url).small().monospace(), &url);
@@ -350,6 +375,13 @@ impl App {
                 }
             });
         });
+        if retry {
+            self.remote_details.remove(&tag);
+        }
+        // registry lookups only for rows actually on screen
+        if ui.is_rect_visible(row.response.rect) {
+            self.request_details(&tag);
+        }
         ui.add_space(6.0);
     }
 
@@ -359,10 +391,6 @@ impl App {
         let name = tag.split(':').next().unwrap_or(tag);
         self.library.models.iter().chain(&self.unc.models).any(|m| m.name == name)
     }
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 fn ago(secs: u64) -> String {

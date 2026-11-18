@@ -15,7 +15,7 @@ impl App {
                 self.runtime_notice(ui);
                 self.system_summary(ui);
                 ui.separator();
-                self.browser_header(ui, ListKind::Uncensored);
+                let shown = self.browser_header(ui, ListKind::Uncensored);
                 ui.label(
                     RichText::new(
                         "Weights only (no executable code), downloaded by Ollama and checked by SHA-256. \
@@ -28,7 +28,7 @@ impl App {
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .auto_shrink(false)
-                    .show(ui, |ui| self.browser_list(ui, ListKind::Uncensored));
+                    .show(ui, |ui| self.browser_list(ui, ListKind::Uncensored, &shown));
             });
         self.show_uncensored = open;
     }
