@@ -364,13 +364,10 @@ impl App {
                 Color32::from_gray(235),
             );
         }
-        let results: Vec<_> = dropped
-            .iter()
-            .filter(|f| !f.path().as_os_str().is_empty())
-            .map(|f| crate::attach::Attachment::load(f.path()))
-            .collect();
-        if !results.is_empty() {
-            self.add_attachments(results);
+        let paths: Vec<_> =
+            dropped.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect();
+        if !paths.is_empty() {
+            self.load_attachments(paths);
         }
     }
 

@@ -458,6 +458,12 @@ impl App {
         });
     }
 
+    /// Reads files (images are base64-encoded, up to 20 MB) off the UI thread.
+    pub(crate) fn load_attachments(&self, paths: Vec<std::path::PathBuf>) {
+        let sink = self.sink.clone();
+        std::thread::spawn(move || sink.send(Event::Attached(paths.iter().map(|p| Attachment::load(p)).collect())));
+    }
+
     pub(crate) fn add_attachments(&mut self, results: Vec<Result<Attachment, String>>) {
         let mut errors = Vec::new();
         for r in results {
