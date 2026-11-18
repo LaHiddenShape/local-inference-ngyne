@@ -9,6 +9,15 @@ It lets you browse, download and manage models from the GUI. Each model shows a 
 cargo run --release
 ```
 
+To add it to the desktop's application list, with its icon:
+
+```sh
+cargo build --release
+install -Dm755 target/release/local-inference-ngyne ~/.local/bin/local-inference-ngyne
+install -Dm644 assets/icon.png ~/.local/share/icons/hicolor/256x256/apps/local-inference-ngyne.png
+install -Dm644 assets/local-inference-ngyne.desktop ~/.local/share/applications/local-inference-ngyne.desktop
+```
+
 ## Persistence
 
 Conversations, settings and the cached model lists are stored in `$XDG_DATA_HOME/local-inference-ngyne` (default `~/.local/share/local-inference-ngyne`). A directory left by the former name `local-inference-ui` is moved there on first launch.

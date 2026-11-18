@@ -11,7 +11,10 @@ impl App {
     // ---------------------------------------------------------------- top bar
 
     pub(crate) fn top_bar(&mut self, ui: &mut egui::Ui, rect: Rect) {
-        let bar = Rect::from_center_size(Pos2::new(rect.center().x, rect.top() + 28.0), Vec2::new(620.0, 34.0));
+        // narrow (history open on a small window): the status shrinks to its dot
+        let compact = rect.width() < 760.0;
+        let width = if compact { 500.0 } else { 620.0 };
+        let bar = Rect::from_center_size(Pos2::new(rect.center().x, rect.top() + 28.0), Vec2::new(width, 34.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
             ui.horizontal_centered(|ui| {
                 let (color, text) = match &self.status {
@@ -21,11 +24,15 @@ impl App {
                     RuntimeStatus::NotInstalled => (theme::DANGER, "ollama not installed".into()),
                     RuntimeStatus::Offline { .. } => (theme::DANGER, "ollama offline".into()),
                 };
-                let (r, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
+                let (r, dot) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
                 ui.painter().rect_filled(Rect::from_center_size(r.center(), Vec2::splat(8.0)), 0.0, color);
-                let resp = ui.label(RichText::new(text).size(12.0).color(Color32::from_gray(170)));
+                let status = if compact {
+                    dot.on_hover_text(&text)
+                } else {
+                    ui.label(RichText::new(&text).size(12.0).color(Color32::from_gray(170)))
+                };
                 if let RuntimeStatus::Offline { error } = &self.status {
-                    resp.on_hover_text(error);
+                    status.on_hover_text(error);
                     if ui.small_button("Retry").clicked() {
                         self.backend.ensure_running();
                     }
@@ -38,7 +45,7 @@ impl App {
                 ui.add_enabled_ui(!streaming, |ui| {
                     egui::ComboBox::from_id_salt("model_select")
                         .selected_text(label)
-                        .width(170.0)
+                        .width(if compact { 130.0 } else { 170.0 })
                         .show_ui(ui, |ui| {
                             for m in &self.installed {
                                 ui.selectable_value(&mut self.selected, Some(m.name.clone()), &m.name);
