@@ -1,6 +1,15 @@
+use std::time::Duration;
+
 use eframe::egui::{self, Align2, Color32, FontId, Rect, Stroke, Vec2};
 
 const CELL: f32 = 13.0;
+/// Pyramid glyphs flicker this many times per second.
+const FLICKER_RATE: f32 = 1.5;
+/// Every `PERIOD` seconds the falcon waits `DELAY` seconds, then glides across
+/// the screen for `FLIGHT` seconds.
+const PERIOD: f32 = 28.0;
+const DELAY: f32 = 4.0;
+const FLIGHT: f32 = 11.0;
 const GLYPHS: &[char] = &['$', '%', 'X', 't', 'o', '#', '+', 'S', '&', '*', ':', '.', '-'];
 
 /// Integer hash -> [0, 1).
@@ -13,7 +22,9 @@ fn hash2(x: i32, y: i32) -> f32 {
 /// Width (in px) of the centered chat column, kept free of decorations.
 pub const CHAT_WIDTH: f32 = 640.0;
 
-pub fn draw_background(painter: &egui::Painter, rect: Rect, t: f32) {
+/// `animated: false` draws a still scene without the falcon; `quiet_column`
+/// fades the falcon where it crosses the chat column (while messages are shown).
+pub fn draw_background(painter: &egui::Painter, rect: Rect, t: f32, animated: bool, quiet_column: bool) {
     painter.rect_filled(rect, 0.0, Color32::from_rgb(11, 11, 13));
 
     // thin grid
@@ -29,18 +40,58 @@ pub fn draw_background(painter: &egui::Painter, rect: Rect, t: f32) {
         y += CELL;
     }
 
-    // central dark halo (radial gradient via rings) to keep the UI readable
+    draw_halo(painter, rect);
+    if animated {
+        draw_pyramids(painter, rect, t);
+        draw_bird(painter, rect, t, quiet_column);
+    } else {
+        draw_pyramids(painter, rect, 0.0);
+    }
+}
+
+/// Time until the animated background next changes: often while the falcon
+/// flies, otherwise at the next glyph flicker or the next flight.
+pub fn next_change(t: f32) -> Duration {
+    let in_cycle = t.rem_euclid(PERIOD);
+    if (DELAY..DELAY + FLIGHT).contains(&in_cycle) {
+        return Duration::from_millis(50);
+    }
+    let to_flicker = (1.0 - (t * FLICKER_RATE).fract()) / FLICKER_RATE;
+    let to_flight = if in_cycle < DELAY { DELAY - in_cycle } else { PERIOD - in_cycle + DELAY };
+    Duration::from_secs_f32(to_flicker.min(to_flight).max(0.02))
+}
+
+/// Dark radial gradient behind the chat that fades the grid where the text
+/// is, drawn as a single mesh.
+fn draw_halo(painter: &egui::Painter, rect: Rect) {
+    const RINGS: usize = 16;
+    const SEGMENTS: usize = 64;
     let center = rect.center();
     let max_r = rect.width().min(rect.height()) * 0.42;
-    for i in 0..40 {
-        let k = i as f32 / 40.0;
-        let r = max_r * (1.0 - k);
-        let alpha = (k * k * 22.0) as u8;
-        painter.circle_filled(center, r, Color32::from_rgba_unmultiplied(11, 11, 13, alpha));
+    // opacity at a fraction `x` of the radius (0 = center)
+    let color = |x: f32| {
+        let a = 1.0 - (-1.15 * (1.0 - x).powi(3)).exp();
+        Color32::from_rgba_unmultiplied(11, 11, 13, (a * 255.0) as u8)
+    };
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(center, color(0.0));
+    for ring in 1..=RINGS {
+        let x = ring as f32 / RINGS as f32;
+        for s in 0..SEGMENTS {
+            let angle = s as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            mesh.colored_vertex(center + max_r * x * Vec2::angled(angle), color(x));
+        }
     }
-
-    draw_pyramids(painter, rect, t);
-    draw_bird(painter, rect, t);
+    let at = |ring: usize, s: usize| (1 + (ring - 1) * SEGMENTS + s % SEGMENTS) as u32;
+    for s in 0..SEGMENTS {
+        mesh.add_triangle(0, at(1, s), at(1, s + 1));
+        for ring in 1..RINGS {
+            let (a, b, c, d) = (at(ring, s), at(ring, s + 1), at(ring + 1, s), at(ring + 1, s + 1));
+            mesh.add_triangle(a, b, d);
+            mesh.add_triangle(a, d, c);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// Pyramid described in grid cells: apex column and height in rows.
@@ -82,7 +133,7 @@ fn draw_pyramids(painter: &egui::Painter, rect: Rect, t: f32) {
     let cols = (rect.width() / CELL) as i32;
     let rows = (rect.height() / CELL) as i32;
     let font = FontId::monospace(CELL * 0.75);
-    let step = (t * 1.5) as i32;
+    let step = (t * FLICKER_RATE) as i32;
 
     for p in layout_pyramids(cols, rows) {
         let dim = 1.0 - p.depth * 0.35;
@@ -149,12 +200,10 @@ const BIRD_DOWN: &[&str] = &[
     "................bbbb.....",
 ];
 
-/// Every `PERIOD` seconds the falcon glides across the screen for `FLIGHT` seconds.
-fn draw_bird(painter: &egui::Painter, rect: Rect, t: f32) {
-    const PERIOD: f32 = 28.0;
-    const FLIGHT: f32 = 11.0;
+/// The falcon's flight of the current cycle, if it is in the air.
+fn draw_bird(painter: &egui::Painter, rect: Rect, t: f32, quiet_column: bool) {
     let cycle = (t / PERIOD).floor() as i32;
-    let local = t - cycle as f32 * PERIOD - 4.0; // short pause after launch
+    let local = t - cycle as f32 * PERIOD - DELAY;
     if !(0.0..FLIGHT).contains(&local) {
         return;
     }
@@ -187,6 +236,8 @@ fn draw_bird(painter: &egui::Painter, rect: Rect, t: f32) {
             if !rect.intersects(cell) {
                 continue;
             }
+            // stay discreet behind the messages
+            let fade = if quiet_column && (cell.center().x - rect.center().x).abs() < CHAT_WIDTH / 2.0 { 0.25 } else { 1.0 };
             let n = hash2(gx * 13 + step, gy * 7);
             let (fill, glyph) = match ch {
                 'b' => (Color32::from_rgb(30 + (n * 25.0) as u8, 70, 150), None),
@@ -195,11 +246,26 @@ fn draw_bird(painter: &egui::Painter, rect: Rect, t: f32) {
                 '>' => (Color32::from_rgb(200, 150, 55), None),
                 _ => (Color32::from_gray(150 + (n * 70.0) as u8), Some(GLYPHS[(n * GLYPHS.len() as f32) as usize % GLYPHS.len()])),
             };
-            painter.rect_filled(cell, 0.0, fill);
+            painter.rect_filled(cell, 0.0, fill.gamma_multiply(fade));
             if let Some(g) = glyph {
-                painter.text(cell.center(), Align2::CENTER_CENTER, g, font.clone(), Color32::from_gray(15));
+                painter.text(cell.center(), Align2::CENTER_CENTER, g, font.clone(), Color32::from_gray(15).gamma_multiply(fade));
             }
         }
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repaints_often_only_while_the_falcon_flies() {
+        assert_eq!(next_change(DELAY + 1.0), Duration::from_millis(50));
+        // idle: next glyph flicker or next flight, whichever comes first
+        let idle = next_change(20.0).as_secs_f32();
+        assert!((idle - 1.0 / FLICKER_RATE).abs() < 1e-3, "{idle}");
+        let before_flight = next_change(DELAY - 0.05).as_secs_f32();
+        assert!(before_flight <= 0.051, "{before_flight}");
+    }
+}

@@ -82,6 +82,7 @@ impl App {
             self.undo_delete = None;
             return;
         }
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(UNDO_SECONDS - (now - *start))); // to hide it
         let title = conv.title.clone();
         let bar = Rect::from_center_size(Pos2::new(rect.center().x, rect.bottom() - 22.0), Vec2::new(340.0, 30.0));
         let mut undo = false;

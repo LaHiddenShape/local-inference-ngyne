@@ -245,11 +245,20 @@ fn apply(dir: &Path, op: Op) -> io::Result<()> {
     }
 }
 
-/// Small app preferences, stored next to the history.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// Small app preferences, stored next to the history. Missing fields take
+/// their default, so older files still load.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
-    #[serde(default)]
     pub last_model: Option<String>,
+    /// Animated pyramids and falcon in the background.
+    pub animations: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self { last_model: None, animations: true }
+    }
 }
 
 fn settings_file() -> PathBuf {

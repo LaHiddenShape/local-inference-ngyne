@@ -2,6 +2,7 @@
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, RichText, Vec2};
 
 use crate::app::App;
+use crate::store;
 use crate::system::fmt_bytes;
 
 impl App {
@@ -48,6 +49,15 @@ impl App {
                 if ui.button("Refresh").clicked() {
                     self.refresh_system();
                 }
+                ui.separator();
+                ui.label(RichText::new("Preferences").strong());
+                if ui
+                    .checkbox(&mut self.settings.animations, "Animated background")
+                    .on_hover_text("Pyramid glyphs and the falcon. Off: a still background, less CPU and GPU when idle.")
+                    .changed()
+                {
+                    let _ = store::save_settings(&self.settings);
+                }
             });
         self.show_system = open;
     }
@@ -61,6 +71,7 @@ impl App {
             self.toast = None;
             return;
         }
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(1.8 - (now - *start))); // to hide it
         let pos = Pos2::new(rect.center().x, rect.bottom() - 20.0);
         let galley = ui.painter().layout_no_wrap(msg.clone(), FontId::proportional(13.0), Color32::from_gray(15));
         let bg = Rect::from_center_size(pos, galley.size() + Vec2::new(20.0, 10.0));

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Color32, Rect, RichText, Vec2};
 
-use crate::background::draw_background;
+use crate::background::{draw_background, next_change};
 use crate::backend::ollama::{url_from_env, Ollama};
 use crate::backend::{Usage, Backend, ChatMessage, Event, InstalledModel, RuntimeStatus, Sink};
 use crate::attach::Attachment;
@@ -459,12 +459,18 @@ impl eframe::App for App {
             self.last_health = now;
             self.backend.check();
         }
-        // background animation: ~20 fps is enough; streaming events and user
-        // input trigger extra repaints on their own
-        if self.streaming() {
-            ctx.request_repaint(); // keep the loading shimmer smooth
-        } else {
-            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        // Repaint only when something changes: tokens, events and input wake the
+        // UI on their own; the background asks for its next change, and stays
+        // still while the window is not focused.
+        let waiting = self.streaming() && self.messages.last().is_some_and(|m| m.content.is_empty());
+        let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        if waiting {
+            ctx.request_repaint(); // smooth loading shimmer until the first token
+        } else if self.settings.animations && focused {
+            ctx.request_repaint_after(next_change(now as f32));
+        }
+        if settled {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(HEALTH_INTERVAL));
         }
 
         let mut history_open = self.show_history;
@@ -478,7 +484,7 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             let rect = ui.max_rect();
-            draw_background(ui.painter(), rect, now as f32);
+            draw_background(ui.painter(), rect, now as f32, self.settings.animations, !self.messages.is_empty());
             self.top_bar(ui, rect);
             if !self.show_history {
                 let btn = Rect::from_min_size(rect.min + Vec2::new(12.0, 12.0), Vec2::new(36.0, 30.0));
