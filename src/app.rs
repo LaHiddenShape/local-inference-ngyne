@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
@@ -96,6 +96,11 @@ pub(crate) struct App {
     pub(crate) library: BrowserState,
     /// Registry details per model tag, shared by both lists; `None` while loading.
     pub(crate) remote_details: HashMap<String, Option<Result<crate::discover::Details, String>>>,
+    /// Tags waiting for a registry lookup, and lookups running.
+    pub(crate) details_queue: VecDeque<String>,
+    pub(crate) details_in_flight: usize,
+    /// Successful lookups with their time, saved to disk.
+    pub(crate) details_cache: HashMap<String, (u64, crate::discover::Details)>,
     pub(crate) toast: Option<(String, f64)>,
 
     pub(crate) conversations: Vec<Conversation>,
@@ -146,6 +151,7 @@ impl App {
         let backend = Ollama::new(&url_from_env(), sink.clone());
         backend.ensure_running();
         let loaded = store::load();
+        let details_cache = crate::discover::load_details_cache();
         let writer = {
             let sink = sink.clone();
             store::Writer::spawn(move |e| sink.send(Event::Notice(e)))
@@ -177,7 +183,10 @@ impl App {
             show_uncensored: false,
             unc: BrowserState::default(),
             library: BrowserState::default(),
-            remote_details: HashMap::new(),
+            remote_details: details_cache.iter().map(|(tag, (_, d))| (tag.clone(), Some(Ok(d.clone())))).collect(),
+            details_queue: VecDeque::new(),
+            details_in_flight: 0,
+            details_cache,
             toast: loaded.warning.map(|w| (w, 0.0)),
             conversations: loaded.conversations,
             writer,
@@ -294,7 +303,15 @@ impl App {
                     }
                 }
                 Event::RemoteDetails { tag, result } => {
+                    self.details_in_flight = self.details_in_flight.saturating_sub(1);
+                    if let Ok(d) = &result {
+                        self.details_cache.insert(tag.clone(), (crate::discover::now_secs(), d.clone()));
+                    }
                     self.remote_details.insert(tag, Some(result));
+                    self.pump_details();
+                    if self.details_in_flight == 0 && self.details_queue.is_empty() {
+                        crate::discover::save_details_cache(&self.details_cache); // batch done
+                    }
                 }
                 Event::Notice(msg) => self.notify(&msg),
                 Event::Health(result) => match (result, &self.status) {
