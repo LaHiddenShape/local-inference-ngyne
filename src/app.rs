@@ -116,6 +116,9 @@ pub(crate) struct App {
     /// Lowercased searchable text per conversation id, tagged with its `updated` stamp.
     pub(crate) search_cache: HashMap<u64, (u64, String)>,
     pub(crate) md_cache: egui_commonmark::CommonMarkCache,
+    /// Per message: a fingerprint of what it looked like and its height, so
+    /// messages out of view can be skipped (see `chat`).
+    pub(crate) msg_layout: Vec<(u64, f32)>,
     /// Recently deleted conversation, its former position and when the undo bar appeared.
     pub(crate) undo_delete: Option<(Conversation, usize, f64)>,
     /// Saves conversations on a background thread.
@@ -157,6 +160,7 @@ impl App {
             sink,
             search_cache: HashMap::new(),
             md_cache: Default::default(),
+            msg_layout: Vec::new(),
             undo_delete: None,
             selected: None,
             pulls: HashMap::new(),

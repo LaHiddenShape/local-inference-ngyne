@@ -3,7 +3,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, 
 
 use crate::app::App;
 use crate::background::CHAT_WIDTH;
-use crate::backend::RuntimeStatus;
+use crate::backend::{ChatMessage, RuntimeStatus};
 use crate::ui::widgets::*;
 
 impl App {
@@ -90,15 +90,38 @@ impl App {
             let now = ui.input(|i| i.time) as f32;
             let mut copy: Option<String> = None;
             let mut regenerate = false;
+            let width_bits = panel_w.to_bits();
+            let layout = &mut self.msg_layout;
+            layout.resize(n, (0, 0.0));
             ui.scope_builder(egui::UiBuilder::new().max_rect(hist), |ui| {
-                egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink(false).show(ui, |ui| {
+                egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink(false).show_viewport(ui, |ui, viewport| {
                     ui.set_width(panel_w - 12.0); // room for the scrollbar
+                    let origin = ui.max_rect().top(); // where content y = 0 is
+                    // blocks are stacked edge to edge; the spacing lives inside them
+                    let spacing = ui.spacing().item_spacing.y;
+                    ui.spacing_mut().item_spacing.y = 0.0;
                     let mut prev_model: Option<&str> = None;
                     for (i, m) in self.messages.iter().enumerate() {
                         let model = m.model.as_deref().unwrap_or(&fallback_model);
+                        // mark a model switch inside the conversation
+                        let switched = m.role == "assistant" && prev_model.is_some_and(|p| p != model);
                         if m.role == "assistant" {
-                            // mark a model switch inside the conversation
-                            if prev_model.is_some_and(|p| p != model) {
+                            prev_model = Some(model);
+                        }
+                        let waiting = m.content.is_empty() && streaming && i == n - 1;
+                        // messages far from the visible area are not laid out (parsing
+                        // the Markdown is the costly part): their last height is reserved
+                        let key = layout_key(m, width_bits, switched, waiting);
+                        let top = ui.cursor().top() - origin;
+                        let (known, height) = layout[i];
+                        if known == key && (top + height < viewport.top() - 300.0 || top > viewport.bottom() + 300.0) {
+                            ui.allocate_space(Vec2::new(ui.available_width(), height));
+                            continue;
+                        }
+                        let text = m.content.as_str();
+                        let block = ui.scope(|ui| {
+                            ui.spacing_mut().item_spacing.y = spacing;
+                            if switched {
                                 ui.vertical_centered(|ui| {
                                     ui.label(
                                         RichText::new(format!("— switched to {model} —"))
@@ -109,93 +132,91 @@ impl App {
                                 });
                                 ui.add_space(10.0);
                             }
-                            prev_model = Some(model);
-                        }
-                        let waiting = m.content.is_empty() && streaming && i == n - 1;
-                        let text = m.content.as_str();
-                        if m.role == "user" {
-                            // user: compact block aligned right
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                                egui::Frame::new()
-                                    .fill(Color32::from_gray(225))
-                                    .inner_margin(egui::Margin::symmetric(14, 10))
-                                    .show(ui, |ui| {
-                                        ui.set_max_width(panel_w * 0.72);
-                                        ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
-                                            if !m.attachments.is_empty() {
-                                                ui.horizontal_wrapped(|ui| {
-                                                    for a in &m.attachments {
-                                                        attachment_chip(ui, a, true);
-                                                    }
-                                                });
-                                            }
-                                            if !text.is_empty() {
-                                                ui.add(
-                                                    egui::Label::new(RichText::new(text).color(Color32::from_gray(15)).size(15.0))
-                                                        .selectable(true),
-                                                );
-                                            }
-                                        });
-                                    });
-                            });
-                            if m.time > 0 {
+                            if m.role == "user" {
+                                // user: compact block aligned right
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                                    ui.label(RichText::new(fmt_time(m.time)).small().monospace().color(Color32::from_gray(110)));
-                                });
-                            }
-                        } else {
-                            // assistant: full-width block with a thin accent bar and model name
-                            let block = egui::Frame::new()
-                                .fill(Color32::from_rgba_unmultiplied(18, 18, 22, 235))
-                                .stroke(Stroke::new(1.0, Color32::from_gray(38)))
-                                .inner_margin(egui::Margin { left: 16, right: 14, top: 10, bottom: 12 })
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.label(RichText::new(model).small().monospace().color(Color32::from_gray(120)));
-                                    ui.add_space(2.0);
-                                    if waiting {
-                                        shimmer_bar(ui, now);
-                                    } else {
-                                        // markdown: headings, lists, tables, code blocks with highlighting
-                                        ui.scope(|ui| {
-                                            ui.visuals_mut().override_text_color = Some(Color32::from_gray(225));
-                                            if let Some(body) = ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body) {
-                                                body.size = 15.0;
-                                            }
-                                            egui_commonmark::CommonMarkViewer::new().show(ui, &mut self.md_cache, text);
+                                    egui::Frame::new()
+                                        .fill(Color32::from_gray(225))
+                                        .inner_margin(egui::Margin::symmetric(14, 10))
+                                        .show(ui, |ui| {
+                                            ui.set_max_width(panel_w * 0.72);
+                                            ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                                                if !m.attachments.is_empty() {
+                                                    ui.horizontal_wrapped(|ui| {
+                                                        for a in &m.attachments {
+                                                            attachment_chip(ui, a, true);
+                                                        }
+                                                    });
+                                                }
+                                                if !text.is_empty() {
+                                                    ui.add(
+                                                        egui::Label::new(RichText::new(text).color(Color32::from_gray(15)).size(15.0))
+                                                            .selectable(true),
+                                                    );
+                                                }
+                                            });
                                         });
-                                    }
                                 });
-                            // gold accent bar along the left edge, exactly as tall as the block
-                            let r = block.response.rect;
-                            ui.painter().rect_filled(
-                                Rect::from_min_max(r.left_top(), Pos2::new(r.left() + 3.0, r.bottom())),
-                                0.0,
-                                Color32::from_rgb(205, 165, 70),
-                            );
-                            // actions under the reply
-                            if !waiting {
-                                ui.horizontal(|ui| {
-                                    let small = |t: &str| {
-                                        egui::Button::new(RichText::new(t).small().monospace().color(Color32::from_gray(130)))
-                                            .frame(false)
-                                    };
-                                    if ui.add(small("copy")).on_hover_text("Copy the reply as Markdown").clicked() {
-                                        copy = Some(m.content.clone());
-                                    }
-                                    if i == n - 1 && !streaming && ui.add(small("regenerate")).on_hover_text("Ask again with the selected model").clicked() {
-                                        regenerate = true;
-                                    }
-                                    if m.time > 0 {
-                                        ui.label(RichText::new(fmt_time(m.time)).small().monospace().color(Color32::from_gray(100)));
-                                    }
-                                    if m.stopped {
-                                        ui.label(RichText::new("· stopped").small().monospace().color(Color32::from_gray(100)));
-                                    }
-                                });
+                                if m.time > 0 {
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                                        ui.label(RichText::new(fmt_time(m.time)).small().monospace().color(Color32::from_gray(110)));
+                                    });
+                                }
+                            } else {
+                                // assistant: full-width block with a thin accent bar and model name
+                                let block = egui::Frame::new()
+                                    .fill(Color32::from_rgba_unmultiplied(18, 18, 22, 235))
+                                    .stroke(Stroke::new(1.0, Color32::from_gray(38)))
+                                    .inner_margin(egui::Margin { left: 16, right: 14, top: 10, bottom: 12 })
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.label(RichText::new(model).small().monospace().color(Color32::from_gray(120)));
+                                        ui.add_space(2.0);
+                                        if waiting {
+                                            shimmer_bar(ui, now);
+                                        } else {
+                                            // markdown: headings, lists, tables, code blocks with highlighting
+                                            ui.scope(|ui| {
+                                                ui.visuals_mut().override_text_color = Some(Color32::from_gray(225));
+                                                if let Some(body) = ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body) {
+                                                    body.size = 15.0;
+                                                }
+                                                egui_commonmark::CommonMarkViewer::new().show(ui, &mut self.md_cache, text);
+                                            });
+                                        }
+                                    });
+                                // gold accent bar along the left edge, exactly as tall as the block
+                                let r = block.response.rect;
+                                ui.painter().rect_filled(
+                                    Rect::from_min_max(r.left_top(), Pos2::new(r.left() + 3.0, r.bottom())),
+                                    0.0,
+                                    Color32::from_rgb(205, 165, 70),
+                                );
+                                // actions under the reply
+                                if !waiting {
+                                    ui.horizontal(|ui| {
+                                        let small = |t: &str| {
+                                            egui::Button::new(RichText::new(t).small().monospace().color(Color32::from_gray(130)))
+                                                .frame(false)
+                                        };
+                                        if ui.add(small("copy")).on_hover_text("Copy the reply as Markdown").clicked() {
+                                            copy = Some(m.content.clone());
+                                        }
+                                        if i == n - 1 && !streaming && ui.add(small("regenerate")).on_hover_text("Ask again with the selected model").clicked() {
+                                            regenerate = true;
+                                        }
+                                        if m.time > 0 {
+                                            ui.label(RichText::new(fmt_time(m.time)).small().monospace().color(Color32::from_gray(100)));
+                                        }
+                                        if m.stopped {
+                                            ui.label(RichText::new("· stopped").small().monospace().color(Color32::from_gray(100)));
+                                        }
+                                    });
+                                }
                             }
-                        }
-                        ui.add_space(14.0);
+                            ui.add_space(14.0);
+                        });
+                        layout[i] = (key, block.response.rect.height());
                     }
                 });
             });
@@ -349,6 +370,14 @@ impl App {
         };
         resp.on_hover_text(tip);
     }
+}
+
+/// Changes whenever the laid-out height of a message may change.
+fn layout_key(m: &ChatMessage, width_bits: u32, switched: bool, waiting: bool) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (width_bits, m.content.len(), m.attachments.len(), m.time, m.stopped, switched, waiting, &m.role).hash(&mut h);
+    h.finish()
 }
 
 /// Small label naming an attached file; `light` for use on the light user bubble.
