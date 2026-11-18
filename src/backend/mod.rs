@@ -83,6 +83,8 @@ pub enum Event {
     Discovered { kind: crate::discover::ListKind, result: Result<Vec<crate::discover::RemoteModel>, String> },
     /// Registry details of one model tag.
     RemoteDetails { tag: String, result: Result<crate::discover::Details, String> },
+    /// A message for the user from a background task (e.g. a failed save).
+    Notice(String),
 }
 
 /// Channel to the UI that also wakes it up.

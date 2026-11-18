@@ -1,7 +1,14 @@
-//! Conversation history persisted as JSON in $XDG_DATA_HOME/local-inference-ngyne.
+//! Conversation history, one JSON file per conversation in
+//! $XDG_DATA_HOME/local-inference-ngyne/conversations. Saves run on a
+//! background thread, so a large history never stalls the UI, and a file that
+//! cannot be read is reported and left untouched instead of being overwritten.
 
+use std::collections::HashSet;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Sender};
+use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +35,10 @@ pub fn now_ms() -> u64 {
 
 /// Former names of the data directory, from before the app was renamed.
 const LEGACY_DIRS: &[&str] = &["local-inference-ui"];
+/// Subdirectory holding one `<id>.json` file per conversation.
+const CONVERSATIONS_DIR: &str = "conversations";
+/// History file of earlier versions, with every conversation in one array.
+const SINGLE_FILE: &str = "conversations.json";
 
 fn data_home() -> PathBuf {
     std::env::var_os("XDG_DATA_HOME")
@@ -48,7 +59,7 @@ pub fn migrate_legacy_data() {
     }
 }
 
-fn migrate_in(base: &Path) -> std::io::Result<()> {
+fn migrate_in(base: &Path) -> io::Result<()> {
     let dir = base.join(crate::APP_ID);
     if dir.exists() {
         return Ok(()); // never overwrite current data
@@ -59,26 +70,179 @@ fn migrate_in(base: &Path) -> std::io::Result<()> {
     }
 }
 
-fn file() -> PathBuf {
-    data_dir().join("conversations.json")
+/// Replaces `path` atomically and durably: temp file, fsync, rename.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let mut file = fs::File::create(&tmp)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    fs::rename(&tmp, path)?;
+    // make the rename itself durable (best effort: not every filesystem supports it)
+    if let Some(dir) = path.parent() {
+        let _ = fs::File::open(dir).and_then(|d| d.sync_all());
+    }
+    Ok(())
 }
 
-/// Loads all conversations, most recent first. Missing or corrupt file -> empty.
-pub fn load() -> Vec<Conversation> {
-    let mut list: Vec<Conversation> = fs::read_to_string(file())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
+fn conversation_path(dir: &Path, id: u64) -> PathBuf {
+    dir.join(format!("{id}.json"))
+}
+
+fn write_conversation(dir: &Path, c: &Conversation) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    write_atomic(&conversation_path(dir, c.id), &serde_json::to_vec(c)?)
+}
+
+/// What was found on disk at startup.
+pub struct Loaded {
+    /// Most recent first.
+    pub conversations: Vec<Conversation>,
+    /// Set when some files could not be read; they are left untouched.
+    pub warning: Option<String>,
+}
+
+pub fn load() -> Loaded {
+    load_from(&data_dir())
+}
+
+fn load_from(base: &Path) -> Loaded {
+    let dir = base.join(CONVERSATIONS_DIR);
+    let mut problems = Vec::new();
+    let single = base.join(SINGLE_FILE);
+    if single.exists() {
+        if let Err(e) = split_single_file(&single, &dir) {
+            problems.push(format!("{}: {e}", single.display()));
+        }
+    }
+    let entries = fs::read_dir(&dir).map(|rd| rd.flatten().collect::<Vec<_>>()).unwrap_or_default();
+    let mut list: Vec<Conversation> = Vec::new();
+    for path in entries.iter().map(|e| e.path()) {
+        if path.extension().is_none_or(|ext| ext != "json") {
+            continue; // e.g. the temp file of an interrupted save
+        }
+        let parsed = fs::read(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string()));
+        match parsed {
+            Ok(c) => list.push(c),
+            Err(e) => problems.push(format!("{}: {e}", path.display())),
+        }
+    }
     list.sort_by(|a, b| b.updated.cmp(&a.updated));
-    list
+    let mut seen = HashSet::new();
+    list.retain(|c| seen.insert(c.id)); // a copied file must not show twice
+    let warning = (!problems.is_empty()).then(|| {
+        for p in &problems {
+            eprintln!("history: {p}");
+        }
+        format!("Could not read {} history file(s), left untouched in {}", problems.len(), base.display())
+    });
+    Loaded { conversations: list, warning }
 }
 
-/// Atomic save: write to a temp file, then rename.
-pub fn save(list: &[Conversation]) -> std::io::Result<()> {
-    fs::create_dir_all(data_dir())?;
-    let tmp = file().with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(list)?)?;
-    fs::rename(tmp, file())
+/// Splits the single-file history of earlier versions into one file per
+/// conversation, then removes it. On any error the old file is kept as is.
+fn split_single_file(single: &Path, dir: &Path) -> Result<(), String> {
+    let text = fs::read_to_string(single).map_err(|e| e.to_string())?;
+    let list: Vec<Conversation> = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    for c in &list {
+        // a file already there was written later by this version: it wins
+        if !conversation_path(dir, c.id).exists() {
+            write_conversation(dir, c).map_err(|e| e.to_string())?;
+        }
+    }
+    fs::remove_file(single).map_err(|e| e.to_string())
+}
+
+enum Op {
+    Save(Box<Conversation>),
+    Delete(u64),
+}
+
+impl Op {
+    fn id(&self) -> u64 {
+        match self {
+            Op::Save(c) => c.id,
+            Op::Delete(id) => *id,
+        }
+    }
+}
+
+/// Saves and deletes conversation files on a background thread, in order.
+/// Dropping it (or calling [`Writer::close`]) waits for pending writes.
+pub struct Writer {
+    tx: Option<Sender<Op>>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl Writer {
+    /// `on_error` receives a message for the user when a write fails.
+    pub fn spawn(on_error: impl Fn(String) + Send + 'static) -> Self {
+        Self::spawn_in(data_dir().join(CONVERSATIONS_DIR), on_error)
+    }
+
+    fn spawn_in(dir: PathBuf, on_error: impl Fn(String) + Send + 'static) -> Self {
+        let (tx, rx) = mpsc::channel::<Op>();
+        let worker = thread::Builder::new()
+            .name("history-writer".into())
+            .spawn(move || {
+                while let Ok(first) = rx.recv() {
+                    // only the last queued operation per conversation matters
+                    let mut batch = vec![first];
+                    batch.extend(rx.try_iter());
+                    let mut done = HashSet::new();
+                    for op in batch.into_iter().rev() {
+                        if done.insert(op.id()) {
+                            if let Err(e) = apply(&dir, op) {
+                                on_error(format!("Could not save history: {e}"));
+                            }
+                        }
+                    }
+                }
+            })
+            .expect("history writer thread");
+        Self { tx: Some(tx), worker: Some(worker) }
+    }
+
+    pub fn save(&self, c: Conversation) {
+        self.send(Op::Save(Box::new(c)));
+    }
+
+    pub fn delete(&self, id: u64) {
+        self.send(Op::Delete(id));
+    }
+
+    fn send(&self, op: Op) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(op);
+        }
+    }
+
+    /// Finishes pending writes; later saves are ignored.
+    pub fn close(&mut self) {
+        drop(self.tx.take()); // the worker stops once the queue is empty
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for Writer {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+fn apply(dir: &Path, op: Op) -> io::Result<()> {
+    match op {
+        Op::Save(c) => write_conversation(dir, &c),
+        Op::Delete(id) => match fs::remove_file(conversation_path(dir, id)) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        },
+    }
 }
 
 /// Small app preferences, stored next to the history.
@@ -96,11 +260,9 @@ pub fn load_settings() -> Settings {
     fs::read_to_string(settings_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
-pub fn save_settings(s: &Settings) -> std::io::Result<()> {
+pub fn save_settings(s: &Settings) -> io::Result<()> {
     fs::create_dir_all(data_dir())?;
-    let tmp = settings_file().with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(s)?)?;
-    fs::rename(tmp, settings_file())
+    write_atomic(&settings_file(), &serde_json::to_vec_pretty(s)?)
 }
 
 /// Short title from the first user message.
@@ -117,9 +279,24 @@ pub fn title_from(messages: &[ChatMessage]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     fn msg(role: &str, content: &str) -> ChatMessage {
         ChatMessage::new(role, content)
+    }
+
+    fn conv(id: u64, title: &str) -> Conversation {
+        Conversation { id, title: title.into(), model: "m".into(), updated: id, messages: vec![msg("user", "hi")], pinned: false }
+    }
+
+    fn temp_base(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("{}-{tag}-{}-{}", crate::APP_ID, std::process::id(), now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn titles(l: &Loaded) -> Vec<&str> {
+        l.conversations.iter().map(|c| c.title.as_str()).collect()
     }
 
     #[test]
@@ -131,22 +308,60 @@ mod tests {
     }
 
     #[test]
-    fn save_and_load_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("{}-test-{}", crate::APP_ID, now_ms()));
-        // SAFETY: test-only, single-threaded access to this variable
-        unsafe { std::env::set_var("XDG_DATA_HOME", &dir) };
-        let c = Conversation { pinned: true, id: 1, title: "t".into(), model: "m".into(), updated: 5, messages: vec![msg("user", "hi")] };
-        save(&[c]).unwrap();
-        let back = load();
-        assert_eq!(back.len(), 1);
-        assert_eq!(back[0].messages[0].content, "hi");
-        assert!(back[0].pinned);
-        let _ = fs::remove_dir_all(dir);
+    fn writer_saves_deletes_and_keeps_the_last_version() {
+        let base = temp_base("writer");
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let sink = errors.clone();
+        let mut w = Writer::spawn_in(base.join(CONVERSATIONS_DIR), move |e| sink.lock().unwrap().push(e));
+        w.save(Conversation { pinned: true, ..conv(1, "first") });
+        for i in 0..50 {
+            w.save(conv(2, &format!("draft {i}")));
+        }
+        w.save(conv(3, "deleted"));
+        w.delete(3);
+        w.delete(4); // unknown id: not an error
+        w.close();
+        assert!(errors.lock().unwrap().is_empty(), "{:?}", errors.lock().unwrap());
+        let loaded = load_from(&base);
+        assert!(loaded.warning.is_none());
+        assert_eq!(titles(&loaded), ["draft 49", "first"]);
+        assert!(loaded.conversations[1].pinned);
+        assert_eq!(loaded.conversations[1].messages[0].content, "hi");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn single_file_history_is_split_then_removed() {
+        let base = temp_base("split");
+        let old = vec![conv(1, "a"), conv(2, "b")];
+        fs::write(base.join(SINGLE_FILE), serde_json::to_vec(&old).unwrap()).unwrap();
+        // a copy written by this version after an interrupted split is newer
+        write_conversation(&base.join(CONVERSATIONS_DIR), &conv(2, "newer")).unwrap();
+        let loaded = load_from(&base);
+        assert!(loaded.warning.is_none());
+        assert_eq!(titles(&loaded), ["newer", "a"]);
+        assert!(!base.join(SINGLE_FILE).exists());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn unreadable_files_are_reported_and_left_untouched() {
+        let base = temp_base("unreadable");
+        fs::write(base.join(SINGLE_FILE), "{ not json").unwrap();
+        let dir = base.join(CONVERSATIONS_DIR);
+        write_conversation(&dir, &conv(1, "ok")).unwrap();
+        fs::write(dir.join("2.json"), "garbage").unwrap();
+        let loaded = load_from(&base);
+        assert_eq!(titles(&loaded), ["ok"]);
+        assert!(loaded.warning.unwrap().starts_with("Could not read 2 history file(s)"));
+        assert_eq!(fs::read_to_string(base.join(SINGLE_FILE)).unwrap(), "{ not json");
+        assert_eq!(fs::read_to_string(dir.join("2.json")).unwrap(), "garbage");
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]
     fn legacy_data_dir_is_moved_once_and_never_overwrites() {
-        let base = std::env::temp_dir().join(format!("{}-migrate-{}", crate::APP_ID, std::process::id()));
+        let base = temp_base("migrate");
         let old = base.join(LEGACY_DIRS[0]);
         let new = base.join(crate::APP_ID);
         fs::create_dir_all(&old).unwrap();

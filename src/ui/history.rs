@@ -27,10 +27,8 @@ impl App {
             messages: self.messages.clone(),
         };
         self.conversations.retain(|c| c.id != id);
+        self.writer.save(conv.clone());
         self.conversations.insert(0, conv);
-        if let Err(e) = store::save(&self.conversations) {
-            self.notify(&format!("Could not save history: {e}"));
-        }
     }
 
     pub(crate) fn new_chat(&mut self) {
@@ -63,18 +61,14 @@ impl App {
             self.new_chat();
         }
         self.undo_delete = Some((conv, pos, 0.0));
-        if let Err(e) = store::save(&self.conversations) {
-            self.notify(&format!("Could not save history: {e}"));
-        }
+        self.writer.delete(id);
     }
 
     pub(crate) fn undo_delete(&mut self) {
         if let Some((conv, pos, _)) = self.undo_delete.take() {
             let pos = pos.min(self.conversations.len());
+            self.writer.save(conv.clone());
             self.conversations.insert(pos, conv);
-            if let Err(e) = store::save(&self.conversations) {
-                self.notify(&format!("Could not save history: {e}"));
-            }
         }
     }
 
@@ -113,9 +107,7 @@ impl App {
     pub(crate) fn toggle_pin(&mut self, id: u64) {
         if let Some(c) = self.conversations.iter_mut().find(|c| c.id == id) {
             c.pinned = !c.pinned;
-        }
-        if let Err(e) = store::save(&self.conversations) {
-            self.notify(&format!("Could not save history: {e}"));
+            self.writer.save(c.clone());
         }
     }
 

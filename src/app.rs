@@ -118,6 +118,8 @@ pub(crate) struct App {
     pub(crate) md_cache: egui_commonmark::CommonMarkCache,
     /// Recently deleted conversation, its former position and when the undo bar appeared.
     pub(crate) undo_delete: Option<(Conversation, usize, f64)>,
+    /// Saves conversations on a background thread.
+    pub(crate) writer: store::Writer,
 }
 
 /// Upper bound for the context window we request.
@@ -135,6 +137,11 @@ impl App {
         sink.probe_system();
         let backend = Ollama::new(&url_from_env(), sink.clone());
         backend.ensure_running();
+        let loaded = store::load();
+        let writer = {
+            let sink = sink.clone();
+            store::Writer::spawn(move |e| sink.send(Event::Notice(e)))
+        };
         Self {
             backend: Box::new(backend),
             rx,
@@ -162,8 +169,9 @@ impl App {
             unc: BrowserState::default(),
             library: BrowserState::default(),
             remote_details: HashMap::new(),
-            toast: None,
-            conversations: store::load(),
+            toast: loaded.warning.map(|w| (w, 0.0)),
+            conversations: loaded.conversations,
+            writer,
             current: None,
             show_history: false,
             history_query: String::new(),
@@ -275,6 +283,7 @@ impl App {
                 Event::RemoteDetails { tag, result } => {
                     self.remote_details.insert(tag, Some(result));
                 }
+                Event::Notice(msg) => self.notify(&msg),
             }
         }
     }
@@ -457,5 +466,9 @@ impl eframe::App for App {
         self.models_window(&ctx);
         self.system_window(&ctx);
         self.uncensored_window(&ctx);
+    }
+
+    fn on_exit(&mut self) {
+        self.writer.close(); // finish pending history writes
     }
 }
