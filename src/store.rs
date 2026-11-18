@@ -1,7 +1,7 @@
-//! Conversation history persisted as JSON in $XDG_DATA_HOME/local-inference-ui.
+//! Conversation history persisted as JSON in $XDG_DATA_HOME/local-inference-ngyne.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -26,12 +26,37 @@ pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-pub(crate) fn data_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_DATA_HOME")
+/// Former names of the data directory, from before the app was renamed.
+const LEGACY_DIRS: &[&str] = &["local-inference-ui"];
+
+fn data_home() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("local-inference-ui")
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+pub(crate) fn data_dir() -> PathBuf {
+    data_home().join(crate::APP_ID)
+}
+
+/// Moves the data directory of a former app name to the current one, so the
+/// history survives the rename. Call once at startup, before anything is read.
+pub fn migrate_legacy_data() {
+    if let Err(e) = migrate_in(&data_home()) {
+        eprintln!("could not move the old data directory to {}: {e}", data_dir().display());
+    }
+}
+
+fn migrate_in(base: &Path) -> std::io::Result<()> {
+    let dir = base.join(crate::APP_ID);
+    if dir.exists() {
+        return Ok(()); // never overwrite current data
+    }
+    match LEGACY_DIRS.iter().map(|name| base.join(name)).find(|old| old.is_dir()) {
+        Some(old) => fs::rename(old, dir),
+        None => Ok(()),
+    }
 }
 
 fn file() -> PathBuf {
@@ -107,7 +132,7 @@ mod tests {
 
     #[test]
     fn save_and_load_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("liu-test-{}", now_ms()));
+        let dir = std::env::temp_dir().join(format!("{}-test-{}", crate::APP_ID, now_ms()));
         // SAFETY: test-only, single-threaded access to this variable
         unsafe { std::env::set_var("XDG_DATA_HOME", &dir) };
         let c = Conversation { pinned: true, id: 1, title: "t".into(), model: "m".into(), updated: 5, messages: vec![msg("user", "hi")] };
@@ -117,5 +142,31 @@ mod tests {
         assert_eq!(back[0].messages[0].content, "hi");
         assert!(back[0].pinned);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_data_dir_is_moved_once_and_never_overwrites() {
+        let base = std::env::temp_dir().join(format!("{}-migrate-{}", crate::APP_ID, std::process::id()));
+        let old = base.join(LEGACY_DIRS[0]);
+        let new = base.join(crate::APP_ID);
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("conversations.json"), "[]").unwrap();
+
+        migrate_in(&base).unwrap();
+        assert_eq!(fs::read_to_string(new.join("conversations.json")).unwrap(), "[]");
+        assert!(!old.exists());
+
+        // a legacy directory that reappears later must not replace current data
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("conversations.json"), "stale").unwrap();
+        migrate_in(&base).unwrap();
+        assert_eq!(fs::read_to_string(new.join("conversations.json")).unwrap(), "[]");
+
+        // nothing to migrate is not an error
+        let empty = base.join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        migrate_in(&empty).unwrap();
+        assert!(!empty.join(crate::APP_ID).exists());
+        let _ = fs::remove_dir_all(base);
     }
 }

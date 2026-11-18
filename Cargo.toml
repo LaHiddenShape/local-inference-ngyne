@@ -1,5 +1,5 @@
 [package]
-name = "local-inference-ui"
+name = "local-inference-ngyne"
 version = "0.1.0"
 edition = "2024"
 
