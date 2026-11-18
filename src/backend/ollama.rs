@@ -373,12 +373,14 @@ impl Backend for Ollama {
         });
     }
 
-    fn chat(&self, model: &str, history: Vec<ChatMessage>, num_ctx: u64, cancel: Arc<AtomicBool>) {
+    fn chat(&self, model: &str, history: Vec<ChatMessage>, num_ctx: u64, think: bool, cancel: Arc<AtomicBool>) {
         let model = model.to_string();
         self.spawn(move |me| {
-            // only role, content and images go to the runtime; text files are inlined
+            // only role, content and images go to the runtime; text files are
+            // inlined; replies that failed before writing anything are left out
             let messages: Vec<_> = history
                 .iter()
+                .filter(|m| !(m.role == "assistant" && m.content.is_empty()))
                 .map(|m| {
                     let mut msg = json!({ "role": m.role, "content": prompt_with_files(&m.content, &m.attachments) });
                     let imgs = images(&m.attachments);
@@ -388,14 +390,21 @@ impl Backend for Ollama {
                     msg
                 })
                 .collect();
-            let body = json!({
+            let mut body = json!({
                 "model": model,
                 "messages": messages,
                 "stream": true,
                 "options": { "num_ctx": num_ctx },
             });
+            // only for models that support it: the others reject the field
+            if think {
+                body["think"] = json!(true);
+            }
             let mut usage = None;
             let res = me.stream("/api/chat", body, &cancel, |v| {
+                if let Some(t) = v["message"]["thinking"].as_str().filter(|t| !t.is_empty()) {
+                    me.sink.send(Event::ChatThinking(t.to_string()));
+                }
                 if let Some(tok) = v["message"]["content"].as_str() {
                     if !tok.is_empty() {
                         me.sink.send(Event::ChatToken(tok.to_string()));
@@ -429,11 +438,11 @@ impl Backend for Ollama {
             let context_length = info.as_ref().and_then(|v| v["model_info"].as_object()).and_then(|o| {
                 o.iter().find(|(k, _)| k.ends_with(".context_length")).and_then(|(_, v)| v.as_u64())
             });
-            let vision = info
-                .as_ref()
-                .and_then(|v| v["capabilities"].as_array())
-                .is_some_and(|c| c.iter().any(|x| x == "vision"));
-            me.sink.send(Event::ModelInfo { model, context_length, vision });
+            let has = |cap: &str| {
+                info.as_ref().and_then(|v| v["capabilities"].as_array()).is_some_and(|c| c.iter().any(|x| x == cap))
+            };
+            let (vision, thinking) = (has("vision"), has("thinking"));
+            me.sink.send(Event::ModelInfo { model, context_length, vision, thinking });
         });
     }
 }
@@ -462,7 +471,7 @@ mod tests {
         println!("installed: {:?}", models.iter().map(|m| &m.name).collect::<Vec<_>>());
         let smallest = models.iter().min_by_key(|m| m.size).expect("no model installed");
         let msg = ChatMessage::new("user", "Reply with one word: hello");
-        o.chat(&smallest.name, vec![msg], 4096, Arc::new(AtomicBool::new(false)));
+        o.chat(&smallest.name, vec![msg], 4096, false, Arc::new(AtomicBool::new(false)));
         let mut out = String::new();
         loop {
             match rx.recv_timeout(Duration::from_secs(120)).expect("timeout") {
