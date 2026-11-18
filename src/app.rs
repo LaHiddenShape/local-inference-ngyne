@@ -18,6 +18,29 @@ pub(crate) struct PullState {
     pub(crate) completed: u64,
     pub(crate) total: u64,
     pub(crate) cancel: Arc<AtomicBool>,
+    /// Smoothed download speed in bytes per second (0 until measured).
+    pub(crate) rate: f64,
+    /// Last speed sample: when, and how many bytes were done then.
+    pub(crate) sample: Option<(std::time::Instant, u64)>,
+}
+
+impl PullState {
+    /// Folds a progress report into the speed estimate (sampled every half
+    /// second; Ollama downloads layer by layer, so a new layer restarts it).
+    fn measure(&mut self, completed: u64) {
+        let now = std::time::Instant::now();
+        match self.sample {
+            Some((at, done)) if completed >= done => {
+                let dt = now.duration_since(at).as_secs_f64();
+                if dt >= 0.5 {
+                    let speed = (completed - done) as f64 / dt;
+                    self.rate = if self.rate == 0.0 { speed } else { self.rate * 0.7 + speed * 0.3 };
+                    self.sample = Some((now, completed));
+                }
+            }
+            _ => self.sample = Some((now, completed)),
+        }
+    }
 }
 
 /// A live model list from ollama.com and its filters (Models and Uncensored windows).
@@ -247,6 +270,7 @@ impl App {
                     if let Some(p) = self.pulls.get_mut(&model) {
                         p.status = status;
                         if total > 0 {
+                            p.measure(completed);
                             p.completed = completed;
                             p.total = total;
                         }
@@ -358,7 +382,7 @@ impl App {
         self.errors.remove(&tag);
         self.pulls.insert(
             tag.clone(),
-            PullState { status: "starting".into(), completed: 0, total: 0, cancel: cancel.clone() },
+            PullState { status: "starting".into(), completed: 0, total: 0, cancel: cancel.clone(), rate: 0.0, sample: None },
         );
         self.backend.pull(&tag, cancel);
     }

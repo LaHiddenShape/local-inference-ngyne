@@ -66,6 +66,15 @@ impl App {
                 if ui.button("System").clicked() {
                     self.show_system = !self.show_system;
                 }
+                // downloads keep going with the Models window closed: show them here
+                if !self.pulls.is_empty() {
+                    let (done, total) = self.pulls.values().fold((0, 0), |(d, t), p| (d + p.completed, t + p.total));
+                    let progress = if total > 0 { format!("{:.0}%", done as f64 * 100.0 / total as f64) } else { "…".into() };
+                    let tip: Vec<String> = self.pulls.iter().map(|(tag, p)| format!("{tag}: {}", p.status)).collect();
+                    if ui.button(format!("↓ {progress}")).on_hover_text(tip.join("\n")).clicked() {
+                        self.show_models = true;
+                    }
+                }
                 if !self.messages.is_empty() && !self.streaming() && ui.button("New chat").on_hover_text("Ctrl+N").clicked() {
                     self.new_chat();
                 }
