@@ -41,9 +41,14 @@ const CONVERSATIONS_DIR: &str = "conversations";
 const SINGLE_FILE: &str = "conversations.json";
 
 fn data_home() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+    data_home_from(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
+}
+
+/// The XDG spec says to ignore an empty or relative `XDG_DATA_HOME`.
+fn data_home_from(xdg: Option<std::ffi::OsString>, home: Option<std::ffi::OsString>) -> PathBuf {
+    xdg.map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join(".local/share")))
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
@@ -308,6 +313,15 @@ mod tests {
 
     fn titles(l: &Loaded) -> Vec<&str> {
         l.conversations.iter().map(|c| c.title.as_str()).collect()
+    }
+
+    #[test]
+    fn invalid_xdg_data_home_is_ignored() {
+        let home = Some("/home/u".into());
+        assert_eq!(data_home_from(Some("/data".into()), home.clone()), PathBuf::from("/data"));
+        assert_eq!(data_home_from(Some("".into()), home.clone()), PathBuf::from("/home/u/.local/share"));
+        assert_eq!(data_home_from(Some("rel/dir".into()), home.clone()), PathBuf::from("/home/u/.local/share"));
+        assert_eq!(data_home_from(None, home), PathBuf::from("/home/u/.local/share"));
     }
 
     #[test]

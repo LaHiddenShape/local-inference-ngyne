@@ -112,6 +112,8 @@ pub(crate) struct App {
     pub(crate) history_query: String,
     /// Used to detect when the Models window gets opened.
     pub(crate) models_was_open: bool,
+    /// The Models window was opened by itself because no model is installed.
+    pub(crate) models_prompted: bool,
     /// Context length per model (`None` while unknown / being fetched).
     pub(crate) ctx_limits: HashMap<String, Option<u64>>,
     /// Token usage of the last reply in the current chat.
@@ -196,6 +198,7 @@ impl App {
             show_history: false,
             history_query: String::new(),
             models_was_open: false,
+            models_prompted: false,
             ctx_limits: HashMap::new(),
             usage: None,
             settings: store::load_settings(),
@@ -225,8 +228,9 @@ impl App {
                         let last = self.settings.last_model.clone().filter(|l| self.installed.iter().any(|m| &m.name == l));
                         self.selected = last.or_else(|| self.installed.first().map(|m| m.name.clone()));
                     }
-                    // first launch without any model: open the model manager
-                    if self.installed.is_empty() && self.pulls.is_empty() {
+                    // no model yet: open the model manager, once (not after every refresh)
+                    if self.installed.is_empty() && self.pulls.is_empty() && !self.models_prompted {
+                        self.models_prompted = true;
                         self.show_models = true;
                     }
                 }
