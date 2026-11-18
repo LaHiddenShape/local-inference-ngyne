@@ -134,6 +134,9 @@ pub(crate) struct App {
     pub(crate) writer: store::Writer,
     /// When the runtime was last checked (app time, seconds).
     pub(crate) last_health: f64,
+    /// Give the keyboard focus to the message box / the history search on the next frame.
+    pub(crate) focus_input: bool,
+    pub(crate) focus_search: bool,
 }
 
 /// How often to check that the runtime still answers, in seconds.
@@ -194,6 +197,8 @@ impl App {
             conversations: loaded.conversations,
             writer,
             last_health: 0.0,
+            focus_input: true,
+            focus_search: false,
             current: None,
             show_history: false,
             history_query: String::new(),
@@ -486,6 +491,22 @@ impl App {
         }
     }
 
+    /// Ctrl+N new chat, Esc stops the reply, Ctrl+K searches the history.
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        let ctrl = egui::Modifiers::COMMAND;
+        if ctx.input_mut(|i| i.consume_key(ctrl, egui::Key::N)) && !self.streaming() {
+            self.new_chat();
+        }
+        // only while streaming, so Esc still closes menus otherwise
+        if self.streaming() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.stop();
+        }
+        if ctx.input_mut(|i| i.consume_key(ctrl, egui::Key::K)) {
+            self.show_history = true;
+            self.focus_search = true;
+        }
+    }
+
     pub(crate) fn notify(&mut self, msg: &str) {
         self.toast = Some((msg.to_string(), 0.0));
     }
@@ -502,6 +523,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_events();
+        self.shortcuts(&ctx);
         self.ensure_model_info();
         // remember the selected model across restarts
         if self.selected.is_some() && self.selected != self.settings.last_model {
@@ -544,7 +566,7 @@ impl eframe::App for App {
             self.top_bar(ui, rect);
             if !self.show_history {
                 let btn = Rect::from_min_size(rect.min + Vec2::new(12.0, 12.0), Vec2::new(36.0, 30.0));
-                if ui.put(btn, egui::Button::new(RichText::new("☰").size(16.0))).on_hover_text("History").clicked() {
+                if ui.put(btn, egui::Button::new(RichText::new("☰").size(16.0))).on_hover_text("History (Ctrl+K)").clicked() {
                     self.show_history = true;
                 }
             }

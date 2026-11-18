@@ -38,6 +38,7 @@ impl App {
         self.messages.clear();
         self.current = None;
         self.usage = None;
+        self.focus_input = true;
     }
 
     pub(crate) fn open_conversation(&mut self, id: u64) {
@@ -49,6 +50,7 @@ impl App {
         }
         self.usage = None;
         self.current = Some(id);
+        self.focus_input = true;
         if self.installed.iter().any(|m| m.name == c.model) {
             self.selected = Some(c.model);
         }
@@ -132,11 +134,14 @@ impl App {
         ui.add_space(8.0);
 
         // search over titles and message contents
-        ui.add(
+        let search = ui.add(
             egui::TextEdit::singleline(&mut self.history_query)
-                .hint_text("Search…")
+                .hint_text("Search…  (Ctrl+K)")
                 .desired_width(f32::INFINITY),
         );
+        if std::mem::take(&mut self.focus_search) {
+            search.request_focus();
+        }
         ui.add_space(8.0);
 
         if self.conversations.is_empty() {
