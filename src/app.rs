@@ -427,11 +427,12 @@ impl App {
 
     /// Asks the runtime for the selected model's context length (once per model).
     pub(crate) fn ensure_model_info(&mut self) {
-        if let Some(m) = &self.selected {
-            if !self.ctx_limits.contains_key(m) && matches!(self.status, RuntimeStatus::Online { .. }) {
-                self.ctx_limits.insert(m.clone(), None);
-                self.backend.model_info(m);
-            }
+        if let Some(m) = &self.selected
+            && !self.ctx_limits.contains_key(m)
+            && matches!(self.status, RuntimeStatus::Online { .. })
+        {
+            self.ctx_limits.insert(m.clone(), None);
+            self.backend.model_info(m);
         }
     }
 

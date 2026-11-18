@@ -462,8 +462,8 @@ fn parse_gguf(b: &[u8]) -> Result<GgufMeta, Truncated> {
             let fixed = |t| match t {
                 0 | 1 | 7 => Some(1),
                 2 | 3 => Some(2),
-                4 | 5 | 6 => Some(4),
-                10 | 11 | 12 => Some(8),
+                4..=6 => Some(4),
+                10..=12 => Some(8),
                 _ => None,
             };
             match t {
@@ -585,11 +585,11 @@ mod tests {
     #[ignore]
     fn live_listing_and_details() {
         let http = client();
-        let page = fetch_page(&http, "dolphin", 1).unwrap();
+        let page = fetch_page(http, "dolphin", 1).unwrap();
         let models = parse_page(&page);
         let d3 = models.iter().find(|m| m.name == "dolphin3").expect("dolphin3 listed");
         assert!(d3.official && d3.downloads.is_some() && !d3.description.is_empty());
-        let d = details(&http, "dolphin3:8b").unwrap();
+        let d = details(http, "dolphin3:8b").unwrap();
         assert_eq!(d.context_length, Some(131072));
         assert!(d.size > 4_000_000_000);
     }
@@ -600,8 +600,8 @@ mod tests {
     fn live_full_discovery() {
         let http = client();
         let t = std::time::Instant::now();
-        let all = fetch(&http, ListKind::Uncensored).unwrap();
-        let lib = fetch(&http, ListKind::Library).unwrap();
+        let all = fetch(http, ListKind::Uncensored).unwrap();
+        let lib = fetch(http, ListKind::Library).unwrap();
         println!("library: {} models, top: {:?}", lib.len(), lib.iter().take(5).map(|m| &m.name).collect::<Vec<_>>());
         assert!(lib.len() > 100 && lib.iter().all(|m| m.official));
         let official = all.iter().filter(|m| m.official).count();
@@ -610,7 +610,7 @@ mod tests {
             println!("{:45} {:?} {:?}", m.name, m.downloads, m.sizes);
         }
         let community = all.iter().find(|m| !m.official).unwrap();
-        println!("{} -> {:?}", community.name, details(&http, &community.name));
+        println!("{} -> {:?}", community.name, details(http, &community.name));
         assert!(official >= 8);
     }
 }

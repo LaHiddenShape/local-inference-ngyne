@@ -447,7 +447,7 @@ fn keep_line_breaks(text: &str) -> std::borrow::Cow<'_, str> {
 
 /// "950", "17.4k", or "8K" for window sizes (multiples of 1024).
 fn short_tokens(n: u64) -> String {
-    if n >= 1024 && n % 1024 == 0 {
+    if n >= 1024 && n.is_multiple_of(1024) {
         format!("{}K", n / 1024)
     } else if n >= 1000 {
         format!("{:.1}k", n as f32 / 1000.0)
