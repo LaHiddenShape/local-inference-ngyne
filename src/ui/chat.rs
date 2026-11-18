@@ -3,7 +3,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, 
 
 use crate::app::App;
 use crate::background::CHAT_WIDTH;
-use crate::backend::{ChatMessage, RuntimeStatus};
+use crate::backend::{ChatMessage, Role, RuntimeStatus};
 use crate::ui::widgets::*;
 
 impl App {
@@ -107,13 +107,13 @@ impl App {
                     for (i, m) in self.messages.iter().enumerate() {
                         let model = m.model.as_deref().unwrap_or(&fallback_model);
                         // mark a model switch inside the conversation
-                        let switched = m.role == "assistant" && prev_model.is_some_and(|p| p != model);
-                        if m.role == "assistant" {
+                        let switched = m.role == Role::Assistant && prev_model.is_some_and(|p| p != model);
+                        if m.role == Role::Assistant {
                             prev_model = Some(model);
                         }
                         // reasoning of a thinking model: its own field, or inline <think> tags
                         let (inline_thinking, answer) =
-                            if m.role == "assistant" { split_thinking(&m.content) } else { ("", m.content.as_str()) };
+                            if m.role == Role::Assistant { split_thinking(&m.content) } else { ("", m.content.as_str()) };
                         let thinking = if m.thinking.is_empty() { inline_thinking } else { m.thinking.as_str() };
                         let waiting = answer.is_empty() && streaming && i == n - 1;
                         // messages far from the visible area are not laid out (parsing
@@ -139,7 +139,7 @@ impl App {
                                 });
                                 ui.add_space(10.0);
                             }
-                            if m.role == "user" {
+                            if m.role == Role::User {
                                 // user: compact block aligned right
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                                     egui::Frame::new()
@@ -461,7 +461,7 @@ fn layout_key(m: &ChatMessage, width_bits: u32, switched: bool, waiting: bool) -
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (width_bits, m.content.len(), m.thinking.len(), m.attachments.len(), m.time, m.stopped, m.error.is_some()).hash(&mut h);
-    (switched, waiting, &m.role).hash(&mut h);
+    (switched, waiting, m.role).hash(&mut h);
     h.finish()
 }
 

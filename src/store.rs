@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::backend::ChatMessage;
+use crate::backend::{ChatMessage, Role};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Conversation {
@@ -283,7 +283,7 @@ pub fn save_settings(s: &Settings) -> io::Result<()> {
 
 /// Short title from the first user message.
 pub fn title_from(messages: &[ChatMessage]) -> String {
-    let first = messages.iter().find(|m| m.role == "user").map(|m| m.content.as_str()).unwrap_or("New chat");
+    let first = messages.iter().find(|m| m.role == Role::User).map(|m| m.content.as_str()).unwrap_or("New chat");
     let line = first.lines().next().unwrap_or("").trim();
     let mut t: String = line.chars().take(40).collect();
     if line.chars().count() > 40 {
@@ -297,12 +297,12 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    fn msg(role: &str, content: &str) -> ChatMessage {
+    fn msg(role: Role, content: &str) -> ChatMessage {
         ChatMessage::new(role, content)
     }
 
     fn conv(id: u64, title: &str) -> Conversation {
-        Conversation { id, title: title.into(), model: "m".into(), updated: id, messages: vec![msg("user", "hi")], pinned: false }
+        Conversation { id, title: title.into(), model: "m".into(), updated: id, messages: vec![msg(Role::User, "hi")], pinned: false }
     }
 
     fn temp_base(tag: &str) -> PathBuf {
@@ -327,9 +327,9 @@ mod tests {
     #[test]
     fn title_uses_first_user_line_truncated() {
         assert_eq!(title_from(&[]), "New chat");
-        assert_eq!(title_from(&[msg("user", "hello\nworld")]), "hello");
+        assert_eq!(title_from(&[msg(Role::User, "hello\nworld")]), "hello");
         let long = "x".repeat(60);
-        assert_eq!(title_from(&[msg("user", &long)]).chars().count(), 41);
+        assert_eq!(title_from(&[msg(Role::User, &long)]).chars().count(), 41);
     }
 
     #[test]

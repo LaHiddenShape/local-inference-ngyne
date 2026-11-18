@@ -2,6 +2,7 @@
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
 
 use crate::app::App;
+use crate::backend::Role;
 use crate::store::{self, Conversation};
 
 const UNDO_SECONDS: f64 = 5.0;
@@ -42,7 +43,7 @@ impl App {
         let Some(c) = self.conversations.iter().find(|c| c.id == id).cloned() else { return };
         self.messages = c.messages;
         // older files have no per-message model: fall back to the conversation's
-        for m in self.messages.iter_mut().filter(|m| m.role == "assistant" && m.model.is_none()) {
+        for m in self.messages.iter_mut().filter(|m| m.role == Role::Assistant && m.model.is_none()) {
             m.model = Some(c.model.clone());
         }
         self.usage = None;

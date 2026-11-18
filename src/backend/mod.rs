@@ -25,9 +25,20 @@ pub struct InstalledModel {
     pub size: u64,
 }
 
+/// Author of a message, stored as "user", "assistant" or "system" like in the
+/// runtime's API (so older history files load unchanged).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    #[default]
+    User,
+    Assistant,
+    System,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ChatMessage {
-    pub role: String,
+    pub role: Role,
     pub content: String,
     /// Model that wrote this reply (assistant messages only). Kept in the
     /// history file, never sent to the runtime.
@@ -55,12 +66,12 @@ fn is_zero(n: &u64) -> bool {
 }
 
 impl ChatMessage {
-    pub fn new(role: &str, content: impl Into<String>) -> Self {
+    pub fn new(role: Role, content: impl Into<String>) -> Self {
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        Self { role: role.into(), content: content.into(), time, ..Default::default() }
+        Self { role, content: content.into(), time, ..Default::default() }
     }
 }
 
@@ -141,4 +152,17 @@ pub trait Backend: Send + Sync {
     fn chat(&self, model: &str, history: Vec<ChatMessage>, num_ctx: u64, think: bool, cancel: Arc<AtomicBool>);
     /// Fetches model metadata (context length).
     fn model_info(&self, model: &str);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roles_keep_their_names_in_json() {
+        let m: ChatMessage = serde_json::from_str(r#"{"role":"assistant","content":"hi"}"#).unwrap();
+        assert_eq!(m.role, Role::Assistant);
+        assert_eq!(serde_json::to_value(Role::User).unwrap(), "user");
+        assert!(serde_json::from_str::<ChatMessage>(r#"{"role":"robot","content":""}"#).is_err());
+    }
 }
