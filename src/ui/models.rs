@@ -160,6 +160,14 @@ impl App {
                 p.status.clone()
             };
             ui.add(egui::ProgressBar::new(frac).text(text).desired_width(260.0).corner_radius(0.0));
+            if p.rate > 0.0 && p.total > p.completed {
+                let left = (p.total - p.completed) as f64 / p.rate;
+                ui.label(
+                    RichText::new(format!("{}/s · {} left", fmt_bytes(p.rate as u64), fmt_duration(left)))
+                        .small()
+                        .color(Color32::GRAY),
+                );
+            }
             if ui.small_button("Cancel").clicked() {
                 p.cancel.store(true, Ordering::Relaxed);
             }
@@ -217,5 +225,27 @@ impl App {
         if let Some(e) = self.errors.get(&m.name) {
             ui.colored_label(theme::DANGER, format!("⚠ {e}"));
         }
+    }
+}
+
+/// "45 s", "3 min 20 s", "1 h 05 min".
+fn fmt_duration(secs: f64) -> String {
+    let s = secs.round() as u64;
+    match s {
+        0..60 => format!("{s} s"),
+        60..3600 => format!("{} min {:02} s", s / 60, s % 60),
+        _ => format!("{} h {:02} min", s / 3600, s % 3600 / 60),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fmt_duration;
+
+    #[test]
+    fn durations_read_naturally() {
+        assert_eq!(fmt_duration(44.6), "45 s");
+        assert_eq!(fmt_duration(200.0), "3 min 20 s");
+        assert_eq!(fmt_duration(3900.0), "1 h 05 min");
     }
 }

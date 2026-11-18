@@ -287,7 +287,7 @@ impl App {
     fn remote_row(&mut self, ui: &mut egui::Ui, kind: ListKind, m: &RemoteModel, sizes: &[String]) {
         // keep the user's pick if still allowed, else the largest allowed size
         let picked = self.browser(kind).size.get(&m.name).filter(|s| sizes.contains(s)).cloned();
-        let size = picked.or_else(|| sizes.last().cloned());
+        let size = picked.or_else(|| self.default_size(sizes));
         let tag = match &size {
             Some(s) => format!("{}:{s}", m.name),
             None => m.name.clone(),
@@ -384,6 +384,18 @@ impl App {
             self.request_details(&tag);
         }
         ui.add_space(6.0);
+    }
+
+    /// Size tag picked by default: the largest that runs on the GPU, else the
+    /// largest that fits in memory, else the smallest (the largest while the
+    /// hardware is still being probed). `sizes` is sorted smallest first.
+    fn default_size(&self, sizes: &[String]) -> Option<String> {
+        if self.probing {
+            return sizes.last().cloned();
+        }
+        let fit = |s: &&String| discover::params_of(s).map(|p| Fit::assess(discover::estimated_bytes(p), &self.sys));
+        let largest = |wanted: Fit| sizes.iter().rev().find(|s| fit(s) == Some(wanted));
+        largest(Fit::Gpu).or_else(|| largest(Fit::Cpu)).or(sizes.first()).cloned()
     }
 
     /// Whether `tag` is one of the rows a list can show (to avoid listing its
