@@ -116,10 +116,10 @@ fn load_from(base: &Path) -> Loaded {
     let dir = base.join(CONVERSATIONS_DIR);
     let mut problems = Vec::new();
     let single = base.join(SINGLE_FILE);
-    if single.exists() {
-        if let Err(e) = split_single_file(&single, &dir) {
-            problems.push(format!("{}: {e}", single.display()));
-        }
+    if single.exists()
+        && let Err(e) = split_single_file(&single, &dir)
+    {
+        problems.push(format!("{}: {e}", single.display()));
     }
     let entries = fs::read_dir(&dir).map(|rd| rd.flatten().collect::<Vec<_>>()).unwrap_or_default();
     let mut list: Vec<Conversation> = Vec::new();
@@ -135,7 +135,7 @@ fn load_from(base: &Path) -> Loaded {
             Err(e) => problems.push(format!("{}: {e}", path.display())),
         }
     }
-    list.sort_by(|a, b| b.updated.cmp(&a.updated));
+    list.sort_by_key(|c| std::cmp::Reverse(c.updated));
     let mut seen = HashSet::new();
     list.retain(|c| seen.insert(c.id)); // a copied file must not show twice
     let warning = (!problems.is_empty()).then(|| {
@@ -199,10 +199,10 @@ impl Writer {
                     batch.extend(rx.try_iter());
                     let mut done = HashSet::new();
                     for op in batch.into_iter().rev() {
-                        if done.insert(op.id()) {
-                            if let Err(e) = apply(&dir, op) {
-                                on_error(format!("Could not save history: {e}"));
-                            }
+                        if done.insert(op.id())
+                            && let Err(e) = apply(&dir, op)
+                        {
+                            on_error(format!("Could not save history: {e}"));
                         }
                     }
                 }

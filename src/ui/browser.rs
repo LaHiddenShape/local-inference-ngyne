@@ -39,11 +39,11 @@ impl App {
         if !just_opened {
             return;
         }
-        if b.models.is_empty() {
-            if let Some((models, at)) = discover::load_cache(kind) {
-                b.models = models;
-                b.fetched_at = at;
-            }
+        if b.models.is_empty()
+            && let Some((models, at)) = discover::load_cache(kind)
+        {
+            b.models = models;
+            b.fetched_at = at;
         }
         if b.limit == 0 {
             b.limit = PAGE;

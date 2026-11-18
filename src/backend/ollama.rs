@@ -460,10 +460,8 @@ impl Backend for Ollama {
                 if let Some(t) = v["message"]["thinking"].as_str().filter(|t| !t.is_empty()) {
                     me.sink.send(Event::ChatThinking(t.to_string()));
                 }
-                if let Some(tok) = v["message"]["content"].as_str() {
-                    if !tok.is_empty() {
-                        me.sink.send(Event::ChatToken(tok.to_string()));
-                    }
+                if let Some(tok) = v["message"]["content"].as_str().filter(|t| !t.is_empty()) {
+                    me.sink.send(Event::ChatToken(tok.to_string()));
                 }
                 let done = v["done"].as_bool().unwrap_or(false);
                 if done {
@@ -555,12 +553,9 @@ mod tests {
         cancel.store(true, Ordering::Relaxed);
         let stopped_at = Instant::now();
         loop {
-            match rx.recv_timeout(Duration::from_secs(5)).expect("no ChatDone after Stop") {
-                Event::ChatDone { error, .. } => {
-                    assert!(error.is_none(), "{error:?}");
-                    break;
-                }
-                _ => {}
+            if let Event::ChatDone { error, .. } = rx.recv_timeout(Duration::from_secs(5)).expect("no ChatDone after Stop") {
+                assert!(error.is_none(), "{error:?}");
+                break;
             }
         }
         assert!(stopped_at.elapsed() < Duration::from_millis(500), "{:?}", stopped_at.elapsed());
@@ -659,9 +654,10 @@ mod spawn_tests {
         let start = Instant::now();
         o.ensure_running();
         let error = loop {
-            match rx.recv_timeout(Duration::from_secs(5)).expect("no Offline status in time") {
-                Event::Status(RuntimeStatus::Offline { error }) => break error,
-                _ => {}
+            if let Event::Status(RuntimeStatus::Offline { error }) =
+                rx.recv_timeout(Duration::from_secs(5)).expect("no Offline status in time")
+            {
+                break error;
             }
         };
         assert!(start.elapsed() < Duration::from_secs(5));
