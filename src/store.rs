@@ -253,11 +253,13 @@ pub struct Settings {
     pub last_model: Option<String>,
     /// Animated pyramids and falcon in the background.
     pub animations: bool,
+    /// Largest context window requested, in tokens (`None`: the model's maximum).
+    pub max_context: Option<u64>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { last_model: None, animations: true }
+        Self { last_model: None, animations: true, max_context: Some(8192) }
     }
 }
 

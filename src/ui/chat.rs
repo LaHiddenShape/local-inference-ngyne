@@ -68,7 +68,10 @@ impl App {
     pub(crate) fn chat(&mut self, ui: &mut egui::Ui, rect: Rect) {
         let panel_w = CHAT_WIDTH.min(rect.width() - 40.0);
         self.handle_dropped_files(ui, rect);
-        let input_h = if self.pending.is_empty() { 118.0 } else { 148.0 };
+        let overflow = self.context_overflow();
+        let no_vision = self.pending.iter().any(|a| a.is_image()) && !self.selected_has_vision();
+        let warnings = overflow.is_some() as u8 + no_vision as u8;
+        let input_h = if self.pending.is_empty() { 118.0 } else { 148.0 } + 18.0 * warnings as f32;
         let left = rect.center().x - panel_w / 2.0;
 
         if self.messages.is_empty() {
@@ -268,13 +271,23 @@ impl App {
                         if let Some(i) = remove {
                             self.pending.remove(i);
                         }
-                        if self.pending.iter().any(|a| a.is_image()) && !self.selected_has_vision() {
-                            ui.label(
-                                RichText::new("This model does not accept images (try gemma3 or llava)")
-                                    .small()
-                                    .color(Color32::from_rgb(220, 90, 90)),
-                            );
-                        }
+                    }
+                    let warn = |ui: &mut egui::Ui, text: String| {
+                        ui.label(RichText::new(text).small().color(Color32::from_rgb(220, 90, 90)));
+                    };
+                    if no_vision {
+                        warn(ui, "This model does not accept images (try gemma3 or llava)".into());
+                    }
+                    if let Some((need, window)) = overflow {
+                        warn(
+                            ui,
+                            format!(
+                                "About {} tokens to send, the context window holds {}: the start will be cut. \
+                                 Raise it in System, or start a new chat.",
+                                short_tokens(need),
+                                short_tokens(window)
+                            ),
+                        );
                     }
                     egui::ScrollArea::vertical().max_height(118.0 - 54.0).id_salt("input_scroll").show(ui, |ui| {
                         ui.add(
@@ -345,8 +358,9 @@ impl App {
         }
     }
 
-    /// Tokens used by the conversation vs. the context window of the model.
-    fn context_gauge(&self, ui: &mut egui::Ui) {
+    /// Tokens used by the conversation vs. the context window of the model;
+    /// a click opens the System window, where the window size is set.
+    fn context_gauge(&mut self, ui: &mut egui::Ui) {
         let (Some(usage), Some(model)) = (self.usage, self.selected.as_deref()) else { return };
         let limit = self.num_ctx(model);
         let used = usage.prompt_tokens + usage.completion_tokens;
@@ -358,17 +372,31 @@ impl App {
         } else {
             Color32::from_gray(110)
         };
-        let (r, resp) = ui.allocate_exact_size(Vec2::new(60.0, 4.0), egui::Sense::hover());
+        let (r, bar) = ui.allocate_exact_size(Vec2::new(60.0, 4.0), egui::Sense::click());
         ui.painter().rect_filled(r, 0.0, Color32::from_gray(40));
         ui.painter().rect_filled(Rect::from_min_size(r.min, Vec2::new(r.width() * frac, r.height())), 0.0, color);
-        let k = |n: u64| if n >= 1000 { format!("{:.1}k", n as f32 / 1000.0) } else { n.to_string() };
-        ui.label(RichText::new(format!("{} / {}", k(used), k(limit))).small().monospace().color(color));
+        let text = format!("{} / {}", short_tokens(used), short_tokens(limit));
+        let label = ui.add(egui::Label::new(RichText::new(text).small().monospace().color(color)).sense(egui::Sense::click()));
         let tip = if frac > 0.9 {
-            "Context almost full: the oldest messages will be dropped by the model. Start a new chat."
+            "Context almost full: the oldest messages will be dropped by the model. \
+             Start a new chat, or click to raise the context window."
         } else {
-            "Tokens used by this conversation / context window of the model"
+            "Tokens used by this conversation / context window of the model. Click to change it."
         };
-        resp.on_hover_text(tip);
+        if bar.union(label).on_hover_text(tip).clicked() {
+            self.show_system = true;
+        }
+    }
+}
+
+/// "950", "17.4k", or "8K" for window sizes (multiples of 1024).
+fn short_tokens(n: u64) -> String {
+    if n >= 1024 && n % 1024 == 0 {
+        format!("{}K", n / 1024)
+    } else if n >= 1000 {
+        format!("{:.1}k", n as f32 / 1000.0)
+    } else {
+        n.to_string()
     }
 }
 

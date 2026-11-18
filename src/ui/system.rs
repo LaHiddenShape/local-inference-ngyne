@@ -58,6 +58,27 @@ impl App {
                 {
                     let _ = store::save_settings(&self.settings);
                 }
+                ui.horizontal(|ui| {
+                    ui.label("Context window");
+                    let label = |c: Option<u64>| c.map(|n| format!("up to {}K tokens", n / 1024)).unwrap_or_else(|| "model maximum".into());
+                    let before = self.settings.max_context;
+                    egui::ComboBox::from_id_salt("max_context")
+                        .selected_text(label(before))
+                        .show_ui(ui, |ui| {
+                            for c in [Some(4096), Some(8192), Some(16384), Some(32768), Some(65536), Some(131072), None] {
+                                ui.selectable_value(&mut self.settings.max_context, c, label(c));
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "How much of the conversation the model can see. A larger window remembers more \
+                             but needs more memory (KV cache) and can make replies slower. \
+                             The model is reloaded with the new size on the next message.",
+                        );
+                    if self.settings.max_context != before {
+                        let _ = store::save_settings(&self.settings);
+                    }
+                });
             });
         self.show_system = open;
     }

@@ -65,6 +65,24 @@ pub fn prompt_with_files(content: &str, attachments: &[Attachment]) -> String {
     out
 }
 
+/// Length in bytes of [`prompt_with_files`], without building it.
+pub fn prompt_len(content: &str, attachments: &[Attachment]) -> usize {
+    let files: usize = attachments
+        .iter()
+        .map(|a| match &a.data {
+            // "File `{name}`:\n```\n{text}\n```\n\n"
+            AttachmentData::Text(text) => a.name.len() + text.trim_end().len() + 19,
+            AttachmentData::Image(_) => 0,
+        })
+        .sum();
+    files + content.len()
+}
+
+/// Rough token count of `bytes` of text (about 4 bytes per token).
+pub fn estimate_tokens(bytes: usize) -> u64 {
+    bytes.div_ceil(4) as u64
+}
+
 /// Base64 images to pass in the runtime's `images` field.
 pub fn images(attachments: &[Attachment]) -> Vec<&str> {
     attachments
@@ -97,8 +115,9 @@ mod tests {
         assert!(i.is_image());
         assert!(Attachment::load(&bin).is_err());
 
-        let prompt = prompt_with_files("summarize", &[t, i.clone()]);
+        let prompt = prompt_with_files("summarize", &[t.clone(), i.clone()]);
         assert_eq!(prompt, "File `notes.md`:\n```\nhello\n```\n\nsummarize");
+        assert_eq!(prompt_len("summarize", &[t, i.clone()]), prompt.len());
         assert_eq!(images(&[i]).len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }

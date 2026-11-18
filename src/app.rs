@@ -8,7 +8,7 @@ use eframe::egui::{self, Color32, Rect, RichText, Vec2};
 use crate::background::{draw_background, next_change};
 use crate::backend::ollama::{url_from_env, Ollama};
 use crate::backend::{Usage, Backend, ChatMessage, Event, InstalledModel, RuntimeStatus, Sink};
-use crate::attach::Attachment;
+use crate::attach::{estimate_tokens, prompt_len, Attachment};
 use crate::store::{self, Conversation};
 use crate::system::SystemInfo;
 use crate::ui::widgets::*;
@@ -135,8 +135,6 @@ pub(crate) struct App {
 /// How often to check that the runtime still answers, in seconds.
 const HEALTH_INTERVAL: f64 = 10.0;
 
-/// Upper bound for the context window we request.
-const MAX_NUM_CTX: u64 = 8192;
 /// Used until the model's real limit is known.
 const FALLBACK_NUM_CTX: u64 = 4096;
 
@@ -388,13 +386,31 @@ impl App {
         self.backend.chat(&model, history, num_ctx, cancel);
     }
 
-    /// Context window to request: the model's maximum, capped to keep memory
-    /// use reasonable on consumer GPUs.
+    /// Context window to request: the model's maximum, capped by the setting
+    /// (a larger window needs more memory for the KV cache).
     pub(crate) fn num_ctx(&self, model: &str) -> u64 {
+        let cap = self.settings.max_context.unwrap_or(u64::MAX);
         match self.ctx_limits.get(model) {
-            Some(Some(max)) => (*max).min(MAX_NUM_CTX),
-            _ => FALLBACK_NUM_CTX,
+            Some(Some(max)) => (*max).min(cap),
+            _ => FALLBACK_NUM_CTX.min(cap),
         }
+    }
+
+    /// When the message being written would not fit in the context window:
+    /// a rough token count of the whole request, and the window size.
+    pub(crate) fn context_overflow(&self) -> Option<(u64, u64)> {
+        let model = self.selected.as_deref()?;
+        let composing = estimate_tokens(prompt_len(&self.input, &self.pending));
+        if self.input.trim().is_empty() && self.pending.is_empty() {
+            return None;
+        }
+        // tokens counted by the runtime for the conversation so far, else an estimate
+        let history = match self.usage {
+            Some(u) => u.prompt_tokens + u.completion_tokens,
+            None => self.messages.iter().map(|m| estimate_tokens(prompt_len(&m.content, &m.attachments))).sum(),
+        };
+        let window = self.num_ctx(model);
+        (history + composing > window).then_some((history + composing, window))
     }
 
     /// Asks the runtime for the selected model's context length (once per model).
