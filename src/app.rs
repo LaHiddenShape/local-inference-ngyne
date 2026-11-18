@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 
-use eframe::egui::{self, Color32, Rect, RichText, Vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
 
 use crate::background::{draw_background, next_change};
 use crate::backend::ollama::{url_from_env, Ollama};
@@ -137,6 +137,9 @@ pub(crate) struct App {
     /// Give the keyboard focus to the message box / the history search on the next frame.
     pub(crate) focus_input: bool,
     pub(crate) focus_search: bool,
+    /// Where notices start (next to the message box) and which way they
+    /// stack: -1 upwards, 1 downwards. Set by `chat` each frame.
+    pub(crate) notice_anchor: (Pos2, f32),
 }
 
 /// How often to check that the runtime still answers, in seconds.
@@ -199,6 +202,7 @@ impl App {
             last_health: 0.0,
             focus_input: true,
             focus_search: false,
+            notice_anchor: (Pos2::ZERO, -1.0),
             current: None,
             show_history: false,
             history_query: String::new(),
@@ -571,8 +575,9 @@ impl eframe::App for App {
                 }
             }
             self.chat(ui, rect);
-            self.toast(ui, rect, now);
-            self.undo_bar(ui, rect, now);
+            // notices stack next to the message box, the undo bar closest
+            let anchor = self.undo_bar(ui, self.notice_anchor, now);
+            self.toast(ui, anchor, now);
         });
 
         self.models_window(&ctx);

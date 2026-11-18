@@ -83,20 +83,48 @@ impl App {
         self.show_system = open;
     }
 
-    pub(crate) fn toast(&mut self, ui: &mut egui::Ui, rect: Rect, now: f64) {
+    /// The current notice, stacked from `anchor` (see `notice_anchor`).
+    pub(crate) fn toast(&mut self, ui: &mut egui::Ui, (anchor, dir): (Pos2, f32), now: f64) {
         let Some((msg, start)) = &mut self.toast else { return };
         if *start == 0.0 {
             *start = now;
         }
-        if now - *start > 1.8 {
+        let life = toast_seconds(msg);
+        if now - *start > life {
             self.toast = None;
             return;
         }
-        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(1.8 - (now - *start))); // to hide it
-        let pos = Pos2::new(rect.center().x, rect.bottom() - 20.0);
-        let galley = ui.painter().layout_no_wrap(msg.clone(), FontId::proportional(13.0), Color32::from_gray(15));
-        let bg = Rect::from_center_size(pos, galley.size() + Vec2::new(20.0, 10.0));
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(life - (now - *start))); // to hide it
+        let galley = ui.painter().layout(msg.clone(), FontId::proportional(13.0), Color32::from_gray(15), 560.0);
+        let bg = notice_rect(anchor, dir, galley.size() + Vec2::new(20.0, 10.0));
         ui.painter().rect_filled(bg, 0.0, Color32::from_gray(225));
         ui.painter().galley(bg.min + Vec2::new(10.0, 5.0), galley, Color32::from_gray(15));
+    }
+}
+
+/// How long a notice stays: long ones (errors, warnings) get time to be read.
+fn toast_seconds(msg: &str) -> f64 {
+    (2.5 + 0.06 * msg.chars().count() as f64).min(8.0)
+}
+
+/// A notice of `size`, centered on `anchor` and stacked upwards (`dir` < 0)
+/// or downwards from it.
+pub(crate) fn notice_rect(anchor: Pos2, dir: f32, size: Vec2) -> Rect {
+    let top = if dir < 0.0 { anchor.y - size.y } else { anchor.y };
+    Rect::from_min_size(Pos2::new(anchor.x - size.x / 2.0, top), size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notices_stack_away_from_the_anchor_and_last_by_length() {
+        let up = notice_rect(Pos2::new(100.0, 500.0), -1.0, Vec2::new(40.0, 20.0));
+        assert_eq!((up.left(), up.top(), up.bottom()), (80.0, 480.0, 500.0));
+        let down = notice_rect(Pos2::new(100.0, 500.0), 1.0, Vec2::new(40.0, 20.0));
+        assert_eq!((down.top(), down.bottom()), (500.0, 520.0));
+        assert!(toast_seconds("Reply copied") < 4.0);
+        assert_eq!(toast_seconds(&"x".repeat(300)), 8.0);
     }
 }
