@@ -263,6 +263,12 @@ impl App {
         } else {
             Rect::from_min_size(Pos2::new(left, rect.bottom() - input_h - 24.0), Vec2::new(panel_w, input_h))
         };
+        // notices go above the message box, or below it while it sits centered
+        self.notice_anchor = if self.messages.is_empty() {
+            (input_rect.center_bottom() + Vec2::new(0.0, 14.0), 1.0)
+        } else {
+            (input_rect.center_top() - Vec2::new(0.0, 10.0), -1.0)
+        };
         let input_id = egui::Id::unique("chat_input");
         if std::mem::take(&mut self.focus_input) {
             ui.memory_mut(|m| m.request_focus(input_id));

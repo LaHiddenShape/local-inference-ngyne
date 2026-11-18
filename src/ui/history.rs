@@ -1,5 +1,5 @@
 
-use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
+use eframe::egui::{self, Color32, Pos2, RichText, Vec2};
 
 use crate::app::App;
 use crate::ui::theme;
@@ -77,18 +77,19 @@ impl App {
     }
 
     /// "Deleted · Undo" bar shown for a few seconds after a deletion.
-    pub(crate) fn undo_bar(&mut self, ui: &mut egui::Ui, rect: Rect, now: f64) {
-        let Some((conv, _, start)) = &mut self.undo_delete else { return };
+    /// Returns where the next notice goes.
+    pub(crate) fn undo_bar(&mut self, ui: &mut egui::Ui, (anchor, dir): (Pos2, f32), now: f64) -> (Pos2, f32) {
+        let Some((conv, _, start)) = &mut self.undo_delete else { return (anchor, dir) };
         if *start == 0.0 {
             *start = now;
         }
         if now - *start > UNDO_SECONDS {
             self.undo_delete = None;
-            return;
+            return (anchor, dir);
         }
         ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(UNDO_SECONDS - (now - *start))); // to hide it
         let title = conv.title.clone();
-        let bar = Rect::from_center_size(Pos2::new(rect.center().x, rect.bottom() - 22.0), Vec2::new(340.0, 30.0));
+        let bar = crate::ui::system::notice_rect(anchor, dir, Vec2::new(340.0, 30.0));
         let mut undo = false;
         ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
             egui::Frame::new().fill(Color32::from_gray(225)).inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| {
@@ -107,6 +108,7 @@ impl App {
         if undo {
             self.undo_delete();
         }
+        (Pos2::new(anchor.x, anchor.y + dir * (bar.height() + 6.0)), dir)
     }
 
     pub(crate) fn toggle_pin(&mut self, id: u64) {
