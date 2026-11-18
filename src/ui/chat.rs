@@ -1,10 +1,13 @@
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, Vec2};
 
-use crate::app::App;
+use std::collections::HashMap;
+
+use crate::app::{App, Thumb};
+use crate::attach::{Attachment, AttachmentData};
 use crate::ui::theme;
 use crate::background::CHAT_WIDTH;
-use crate::backend::{ChatMessage, Role, RuntimeStatus};
+use crate::backend::{ChatMessage, Event, Role, RuntimeStatus, Sink};
 use crate::ui::widgets::*;
 
 impl App {
@@ -90,7 +93,12 @@ impl App {
         let overflow = self.context_overflow();
         let no_vision = self.pending.iter().any(|a| a.is_image()) && !self.selected_has_vision();
         let warnings = overflow.is_some() as u8 + no_vision as u8;
-        let input_h = if self.pending.is_empty() { 118.0 } else { 148.0 } + 18.0 * warnings as f32;
+        let pending_h = match () {
+            _ if self.pending.is_empty() => 0.0,
+            _ if self.pending.iter().any(|a| a.is_image()) => 66.0, // 48 px previews
+            _ => 30.0,
+        };
+        let input_h = 118.0 + pending_h + 18.0 * warnings as f32;
         let left = rect.center().x - panel_w / 2.0;
 
         if self.messages.is_empty() {
@@ -170,7 +178,9 @@ impl App {
                                                 if !m.attachments.is_empty() {
                                                     ui.horizontal_wrapped(|ui| {
                                                         for a in &m.attachments {
-                                                            attachment_chip(ui, a, true);
+                                                            if !image_preview(ui, &mut self.thumbs, &self.sink, a, 96.0) {
+                                                                attachment_chip(ui, a, true);
+                                                            }
                                                         }
                                                     });
                                                 }
@@ -305,7 +315,9 @@ impl App {
                         let mut remove = None;
                         ui.horizontal_wrapped(|ui| {
                             for (i, a) in self.pending.iter().enumerate() {
-                                attachment_chip(ui, a, false);
+                                if !image_preview(ui, &mut self.thumbs, &self.sink, a, 48.0) {
+                                    attachment_chip(ui, a, false);
+                                }
                                 if ui.small_button("×").on_hover_text("Remove").clicked() {
                                     remove = Some(i);
                                 }
@@ -495,20 +507,54 @@ fn layout_key(m: &ChatMessage, width_bits: u32, switched: bool, waiting: bool) -
     h.finish()
 }
 
+/// Preview of an image attachment, `height` tall, decoded in the background
+/// the first time (a gray box of the same size meanwhile, so nothing moves).
+/// Returns false for text files and undecodable images: show a chip instead.
+fn image_preview(ui: &mut egui::Ui, thumbs: &mut HashMap<u64, Thumb>, sink: &Sink, a: &Attachment, height: f32) -> bool {
+    let AttachmentData::Image(b64) = &a.data else { return false };
+    let key = crate::attach::fingerprint(a);
+    match thumbs.get(&key) {
+        Some(Thumb::Failed) => false,
+        Some(Thumb::Ready(tex)) => {
+            let size = tex.size_vec2();
+            let width = (size.x * height / size.y.max(1.0)).clamp(height / 2.0, height * 2.0);
+            ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::new(width, height))).on_hover_text(&a.name);
+            true
+        }
+        loading => {
+            if loading.is_none() {
+                thumbs.insert(key, Thumb::Loading);
+                let (sink, b64) = (sink.clone(), b64.clone());
+                // 2x the shown size, sharp on HiDPI screens
+                let max = (height * 2.0) as u32 * 2;
+                std::thread::spawn(move || sink.send(Event::Thumbnail { key, image: crate::attach::thumbnail(&b64, max) }));
+            }
+            let (r, resp) = ui.allocate_exact_size(Vec2::splat(height), egui::Sense::hover());
+            ui.painter().rect_filled(r, 0.0, Color32::from_gray(60));
+            resp.on_hover_text(&a.name);
+            true
+        }
+    }
+}
+
 /// Small label naming an attached file; `light` for use on the light user bubble.
-fn attachment_chip(ui: &mut egui::Ui, a: &crate::attach::Attachment, light: bool) {
+/// A single widget (a frameless, unclickable button) so that a row made taller
+/// by an image preview does not stretch it.
+fn attachment_chip(ui: &mut egui::Ui, a: &Attachment, light: bool) {
     let icon = if a.is_image() { "🖼" } else { "📄" };
     let (fill, text) = if light {
         (Color32::from_gray(200), Color32::from_gray(25))
     } else {
         (Color32::from_gray(45), Color32::from_gray(210))
     };
-    egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(6, 2)).show(ui, |ui| {
-        // long file names are shortened, the full name is in the tooltip
-        let short: String = a.name.chars().take(28).collect();
-        let shown = if a.name.chars().count() > 28 { format!("{short}…") } else { short };
-        ui.label(RichText::new(format!("{icon} {shown}")).small().color(text)).on_hover_text(&a.name);
-    });
+    // long file names are shortened, the full name is in the tooltip
+    let short: String = a.name.chars().take(28).collect();
+    let shown = if a.name.chars().count() > 28 { format!("{short}…") } else { short };
+    let chip = egui::Button::new(RichText::new(format!("{icon} {shown}")).small().color(text))
+        .fill(fill)
+        .stroke(Stroke::NONE)
+        .sense(egui::Sense::hover());
+    ui.add(chip).on_hover_text(&a.name);
 }
 
 /// "14:32" for today, "17/11 14:32" for another day of this year, else "17/11/2025 14:32"

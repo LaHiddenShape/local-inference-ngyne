@@ -107,6 +107,8 @@ pub enum Event {
     Notice(String),
     /// Result of a periodic health check: the runtime version, or the error.
     Health(Result<String, String>),
+    /// Preview of an image attachment, decoded in the background (`None` if it could not be).
+    Thumbnail { key: u64, image: Option<egui::ColorImage> },
 }
 
 /// Channel to the UI that also wakes it up.
