@@ -54,7 +54,7 @@ impl App {
                 ui.label(RichText::new("Preferences").strong());
                 if ui
                     .checkbox(&mut self.settings.animations, "Animated background")
-                    .on_hover_text("Pyramid glyphs and the falcon. Off: a still background, less CPU and GPU when idle.")
+                    .on_hover_text("Pyramid glyphs. Off: a still background, less CPU and GPU when idle.")
                     .changed()
                 {
                     let _ = store::save_settings(&self.settings);

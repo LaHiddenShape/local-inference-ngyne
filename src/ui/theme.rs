@@ -1,5 +1,5 @@
 //! Colors of the app, named by what they mean, and the egui visuals built
-//! from them. The background scene (pyramids, falcon) keeps its own palette.
+//! from them. The background scene (pyramids) keeps its own palette.
 
 use eframe::egui::{self, Color32, Stroke};
 
