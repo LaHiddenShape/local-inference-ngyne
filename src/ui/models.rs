@@ -4,9 +4,9 @@ use eframe::egui::{self, Color32, RichText};
 
 use crate::app::App;
 use crate::ui::theme;
-use crate::backend::{InstalledModel, RuntimeStatus};
+use crate::backend::RuntimeStatus;
 use crate::discover::{model_url, ListKind};
-use crate::system::{fmt_bytes, Fit, SystemInfo};
+use crate::system::{fmt_bytes, Fit};
 use crate::ui::widgets::*;
 
 impl App {
@@ -14,12 +14,12 @@ impl App {
 
     pub(crate) fn models_window(&mut self, ctx: &egui::Context) {
         // refresh the installed list each time the window is opened
-        if self.show_models && !self.models_was_open && matches!(self.status, RuntimeStatus::Online { .. }) {
+        if self.view.show_models && !self.view.models_was_open && matches!(self.runtime.status, RuntimeStatus::Online { .. }) {
             self.backend.refresh_models();
         }
-        self.models_was_open = self.show_models;
-        self.browser_opened(ListKind::Library, self.show_models);
-        let mut open = self.show_models;
+        self.view.models_was_open = self.view.show_models;
+        self.browser_opened(ListKind::Library, self.view.show_models);
+        let mut open = self.view.show_models;
         egui::Window::new("Models")
             .open(&mut open)
             .default_size([680.0, 560.0])
@@ -31,16 +31,16 @@ impl App {
 
                 ui.horizontal(|ui| {
                     ui.label("Pull any model:");
-                    ui.add(egui::TextEdit::singleline(&mut self.custom_pull).hint_text("e.g. qwen2.5-coder:7b").desired_width(200.0));
-                    let tag = self.custom_pull.trim().to_string();
+                    ui.add(egui::TextEdit::singleline(&mut self.view.custom_pull).hint_text("e.g. qwen2.5-coder:7b").desired_width(200.0));
+                    let tag = self.view.custom_pull.trim().to_string();
                     if ui.add_enabled(!tag.is_empty(), egui::Button::new("Download")).clicked() {
                         self.start_pull(&tag);
-                        self.custom_pull.clear();
+                        self.view.custom_pull.clear();
                     }
                     if !tag.is_empty() {
                         let url = model_url(&tag);
                         ui.hyperlink_to(RichText::new(&url).small(), &url);
-                        self.copy_button(ui, &url);
+                        self.view.copy_button(ui, &url);
                     }
                 });
                 ui.separator();
@@ -53,19 +53,20 @@ impl App {
                             self.refresh_system();
                         }
                     });
-                    if self.installed.is_empty() {
+                    if self.runtime.installed.is_empty() {
                         ui.label(RichText::new("No model installed yet.").color(Color32::GRAY));
                     }
-                    for m in self.installed.clone() {
-                        self.installed_row(ui, &m);
+                    for i in 0..self.runtime.installed.len() {
+                        self.installed_row(ui, i);
                     }
                     // custom pulls not shown in a list
                     let extra: Vec<String> = self
+                        .runtime
                         .pulls
                         .keys()
-                        .chain(self.errors.keys())
+                        .chain(self.runtime.errors.keys())
                         .filter(|k| !self.listed(k))
-                        .filter(|k| !self.installed.iter().any(|m| &m.name == *k))
+                        .filter(|k| !self.runtime.installed.iter().any(|m| &m.name == *k))
                         .cloned()
                         .collect();
                     for tag in extra {
@@ -88,16 +89,16 @@ impl App {
                     self.browser_list(ui, ListKind::Library, &shown);
                 });
             });
-        self.show_models = open;
+        self.view.show_models = open;
     }
 
     pub(crate) fn runtime_notice(&mut self, ui: &mut egui::Ui) {
-        match self.status.clone() {
+        match &self.runtime.status {
             RuntimeStatus::NotInstalled => {
                 ui.colored_label(theme::DANGER, "Ollama is not installed (the `ollama` command was not found).");
                 ui.horizontal(|ui| {
                     ui.hyperlink_to(OLLAMA_DOWNLOAD_URL, OLLAMA_DOWNLOAD_URL);
-                    self.copy_button(ui, OLLAMA_DOWNLOAD_URL);
+                    self.view.copy_button(ui, OLLAMA_DOWNLOAD_URL);
                     if ui.button("Retry").clicked() {
                         self.backend.ensure_running();
                     }
@@ -117,11 +118,11 @@ impl App {
 
     pub(crate) fn system_summary(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            if self.probing {
+            if self.hw.probing {
                 ui.label(RichText::new("Probing hardware…").small().color(Color32::GRAY));
                 return;
             }
-            let s = &self.sys;
+            let s = &self.hw.info;
             let gpu = match s.gpus.iter().find(|g| g.vram.is_some()) {
                 Some(g) => format!("{} ({})", g.name, fmt_bytes(g.vram.unwrap_or(0))),
                 None => "no dedicated GPU".into(),
@@ -137,7 +138,7 @@ impl App {
                 .color(Color32::from_gray(170)),
             );
             if ui.small_button("Details").clicked() {
-                self.show_system = true;
+                self.view.show_system = true;
             }
         });
     }
@@ -152,7 +153,7 @@ impl App {
     }
 
     pub(crate) fn pull_status(&mut self, ui: &mut egui::Ui, tag: &str) {
-        if let Some(p) = self.pulls.get(tag) {
+        if let Some(p) = self.runtime.pulls.get(tag) {
             let frac = if p.total > 0 { p.completed as f32 / p.total as f32 } else { 0.0 };
             let text = if p.total > 0 {
                 format!("{} · {} / {}", p.status, fmt_bytes(p.completed), fmt_bytes(p.total))
@@ -171,7 +172,7 @@ impl App {
             if ui.small_button("Cancel").clicked() {
                 p.cancel.store(true, Ordering::Relaxed);
             }
-        } else if let Some(e) = self.errors.get(tag).cloned() {
+        } else if let Some(e) = self.runtime.errors.get(tag).cloned() {
             ui.colored_label(theme::DANGER, format!("⚠ {e}"));
             if ui.small_button("Retry").clicked() {
                 self.start_pull(tag);
@@ -179,50 +180,52 @@ impl App {
         }
     }
 
-    pub(crate) fn installed_row(&mut self, ui: &mut egui::Ui, m: &InstalledModel) {
+    /// Row of the `i`-th installed model.
+    pub(crate) fn installed_row(&mut self, ui: &mut egui::Ui, i: usize) {
+        let m = &self.runtime.installed[i];
         ui.horizontal(|ui| {
-            let active = self.selected.as_deref() == Some(m.name.as_str());
+            let active = self.runtime.selected.as_deref() == Some(m.name.as_str());
             ui.label(RichText::new(&m.name).strong());
             ui.label(RichText::new(fmt_bytes(m.size)).small().color(Color32::GRAY));
             // context window as reported by the runtime (fetched once per model)
-            match self.ctx_limits.get(&m.name) {
+            match self.runtime.ctx_limits.get(&m.name) {
                 Some(Some(n)) => {
                     ui.label(RichText::new(format!("{}K context", n / 1024)).small().color(Color32::GRAY));
                 }
                 Some(None) => {}
                 None => {
-                    if matches!(self.status, RuntimeStatus::Online { .. }) {
-                        self.ctx_limits.insert(m.name.clone(), None);
+                    if matches!(self.runtime.status, RuntimeStatus::Online { .. }) {
+                        self.runtime.ctx_limits.insert(m.name.clone(), None);
                         self.backend.model_info(&m.name);
                     }
                 }
             }
             // already on disk: only memory matters
-            if !self.probing {
-                Self::fit_badge(ui, Fit::assess(m.size, &SystemInfo { disk_free: 0, ..self.sys.clone() }));
+            if !self.hw.probing {
+                Self::fit_badge(ui, Fit::assess_installed(m.size, &self.hw.info));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.confirm_delete.as_deref() == Some(m.name.as_str()) {
+                if self.view.confirm_delete.as_deref() == Some(m.name.as_str()) {
                     if ui.button("Cancel").clicked() {
-                        self.confirm_delete = None;
+                        self.view.confirm_delete = None;
                     }
                     if ui.button(RichText::new("Confirm delete").color(theme::DANGER)).clicked() {
                         self.backend.delete(&m.name);
-                        self.confirm_delete = None;
+                        self.view.confirm_delete = None;
                     }
                 } else if ui.small_button("Delete").clicked() {
-                    self.confirm_delete = Some(m.name.clone());
+                    self.view.confirm_delete = Some(m.name.clone());
                 }
                 if active {
                     ui.label(RichText::new("in use").small().color(theme::SUCCESS));
                 } else if ui.small_button("Use").clicked() {
-                    self.selected = Some(m.name.clone());
+                    self.runtime.selected = Some(m.name.clone());
                 }
                 let base = m.name.trim_end_matches(":latest");
-                self.copy_button(ui, &model_url(base));
+                self.view.copy_button(ui, &model_url(base));
             });
         });
-        if let Some(e) = self.errors.get(&m.name) {
+        if let Some(e) = self.runtime.errors.get(&m.name) {
             ui.colored_label(theme::DANGER, format!("⚠ {e}"));
         }
     }

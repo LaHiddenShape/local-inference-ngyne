@@ -6,8 +6,8 @@ use crate::discover::ListKind;
 
 impl App {
     pub(crate) fn uncensored_window(&mut self, ctx: &egui::Context) {
-        self.browser_opened(ListKind::Uncensored, self.show_uncensored);
-        let mut open = self.show_uncensored;
+        self.browser_opened(ListKind::Uncensored, self.view.show_uncensored);
+        let mut open = self.view.show_uncensored;
         egui::Window::new("Uncensored models")
             .open(&mut open)
             .default_size([720.0, 600.0])
@@ -31,6 +31,6 @@ impl App {
                     .auto_shrink(false)
                     .show(ui, |ui| self.browser_list(ui, ListKind::Uncensored, &shown));
             });
-        self.show_uncensored = open;
+        self.view.show_uncensored = open;
     }
 }
