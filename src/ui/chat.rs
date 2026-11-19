@@ -188,11 +188,22 @@ impl App {
                                             });
                                         });
                                 });
-                                if m.time > 0 {
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                                    if m.time > 0 {
                                         ui.label(RichText::new(fmt_time(m.time)).small().monospace().color(Color32::from_gray(110)));
-                                    });
-                                }
+                                    }
+                                    if !text.is_empty()
+                                        && ui
+                                            .add(
+                                                egui::Button::new(RichText::new("copy").small().monospace().color(Color32::from_gray(130)))
+                                                    .frame(false),
+                                            )
+                                            .on_hover_text("Copy the prompt")
+                                            .clicked()
+                                    {
+                                        copy = Some(text.to_string());
+                                    }
+                                });
                             } else {
                                 // assistant: full-width block with a thin accent bar and model name
                                 let block = egui::Frame::new()
@@ -289,11 +300,16 @@ impl App {
         }
         let mut send = false;
         let mut stop = false;
-        // Enter sends, Shift+Enter inserts a newline
+        // Enter sends, Shift+Enter inserts a newline; while a reply streams,
+        // Enter in an empty box stops it
         if ui.memory(|m| m.has_focus(input_id))
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
         {
-            send = true;
+            if self.chat.streaming() && self.chat.input.trim().is_empty() && self.chat.pending.is_empty() {
+                stop = true;
+            } else {
+                send = true;
+            }
         }
         ui.scope_builder(egui::UiBuilder::new().max_rect(input_rect), |ui| {
             egui::Frame::new()
@@ -357,7 +373,7 @@ impl App {
                         self.context_gauge(ui);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if self.chat.streaming() {
-                                if ui.add(egui::Button::new("■ Stop").min_size(Vec2::new(64.0, 28.0))).on_hover_text("Esc").clicked() {
+                                if ui.add(egui::Button::new("■ Stop").min_size(Vec2::new(64.0, 28.0))).on_hover_text("Esc, or Enter in an empty box").clicked() {
                                     stop = true;
                                 }
                             } else {
