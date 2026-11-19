@@ -574,29 +574,6 @@ fn fmt_time(secs: u64) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn inline_reasoning_is_split_from_the_answer() {
-        assert_eq!(split_thinking("hello"), ("", "hello"));
-        assert_eq!(split_thinking("<think>hmm</think>\n\nAnswer"), ("hmm", "Answer"));
-        assert_eq!(split_thinking("<think>still thinking"), ("still thinking", ""));
-    }
-
-    #[test]
-    fn single_newlines_become_hard_breaks_outside_code() {
-        assert_eq!(keep_line_breaks("one line"), "one line");
-        assert_eq!(keep_line_breaks("Sand stairs\nkings asleep"), "Sand stairs  \nkings asleep");
-        // paragraphs and fenced code are left alone
-        assert_eq!(keep_line_breaks("a\n\nb"), "a\n\nb");
-        let code = "```rust\nlet a = 1;\nlet b = 2;\n```\ntext";
-        assert_eq!(keep_line_breaks(code), code);
-        assert_eq!(keep_line_breaks("x\n```\ny\n```"), "x  \n```\ny\n```");
-    }
-}
-
 const GREETING_ID: &str = "greeting_start";
 
 /// "what's on your mind?" with a glitch look: the letters decode from random
@@ -644,10 +621,10 @@ fn greeting(ui: &egui::Ui, center: Pos2) {
         let mut split = 0.0;
         if local < SCRAMBLE {
             glyph = GLYPHS[(seed % GLYPHS.len() as u64) as usize] as char;
-        } else if burst && seed % 3 == 0 {
+        } else if burst && seed.is_multiple_of(3) {
             offset = Vec2::new((unit(seed >> 8) as f32 - 0.5) * 14.0, (unit(seed >> 16) as f32 - 0.5) * 6.0);
             split = 3.0;
-            if seed % 7 == 0 {
+            if seed.is_multiple_of(7) {
                 glyph = GLYPHS[((seed >> 24) % GLYPHS.len() as u64) as usize] as char;
             }
         }
@@ -681,4 +658,27 @@ fn hash(mut x: u64) -> u64 {
 
 fn unit(x: u64) -> f64 {
     (x >> 11) as f64 / (1u64 << 53) as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_reasoning_is_split_from_the_answer() {
+        assert_eq!(split_thinking("hello"), ("", "hello"));
+        assert_eq!(split_thinking("<think>hmm</think>\n\nAnswer"), ("hmm", "Answer"));
+        assert_eq!(split_thinking("<think>still thinking"), ("still thinking", ""));
+    }
+
+    #[test]
+    fn single_newlines_become_hard_breaks_outside_code() {
+        assert_eq!(keep_line_breaks("one line"), "one line");
+        assert_eq!(keep_line_breaks("Sand stairs\nkings asleep"), "Sand stairs  \nkings asleep");
+        // paragraphs and fenced code are left alone
+        assert_eq!(keep_line_breaks("a\n\nb"), "a\n\nb");
+        let code = "```rust\nlet a = 1;\nlet b = 2;\n```\ntext";
+        assert_eq!(keep_line_breaks(code), code);
+        assert_eq!(keep_line_breaks("x\n```\ny\n```"), "x  \n```\ny\n```");
+    }
 }
