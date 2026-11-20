@@ -192,15 +192,7 @@ impl App {
                                     if m.time > 0 {
                                         ui.label(RichText::new(fmt_time(m.time)).small().monospace().color(Color32::from_gray(110)));
                                     }
-                                    if !text.is_empty()
-                                        && ui
-                                            .add(
-                                                egui::Button::new(RichText::new("copy").small().monospace().color(Color32::from_gray(130)))
-                                                    .frame(false),
-                                            )
-                                            .on_hover_text("Copy the prompt")
-                                            .clicked()
-                                    {
+                                    if !text.is_empty() && copy_icon(ui).on_hover_text("Copy the prompt").clicked() {
                                         copy = Some(text.to_string());
                                     }
                                 });
@@ -253,7 +245,7 @@ impl App {
                                             egui::Button::new(RichText::new(t).small().monospace().color(Color32::from_gray(130)))
                                                 .frame(false)
                                         };
-                                        if !answer.is_empty() && ui.add(small("copy")).on_hover_text("Copy the reply as Markdown").clicked() {
+                                        if !answer.is_empty() && copy_icon(ui).on_hover_text("Copy the reply as Markdown").clicked() {
                                             copy = Some(answer.to_string());
                                         }
                                         if i == n - 1 && !streaming && ui.add(small("regenerate")).on_hover_text("Ask again with the selected model").clicked() {
@@ -674,6 +666,20 @@ fn hash(mut x: u64) -> u64 {
 
 fn unit(x: u64) -> f64 {
     (x >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// A small "copy" icon (two stacked sheets), brighter on hover.
+fn copy_icon(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::click());
+    let color = if resp.hovered() { Color32::from_gray(220) } else { Color32::from_gray(130) };
+    let stroke = Stroke::new(1.2, color);
+    let c = rect.center();
+    let back = Rect::from_min_size(c + Vec2::new(-5.0, -5.0), Vec2::new(7.0, 8.0));
+    let front = back.translate(Vec2::new(3.0, 2.5));
+    ui.painter().rect_stroke(back, 0.0, stroke, egui::StrokeKind::Middle);
+    ui.painter().rect_filled(front, 0.0, Color32::from_rgb(11, 11, 13));
+    ui.painter().rect_stroke(front, 0.0, stroke, egui::StrokeKind::Middle);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 #[cfg(test)]
