@@ -20,7 +20,7 @@ fn main() -> eframe::Result {
         .with_inner_size([1100.0, 760.0])
         // below this the top bar, the chat column and the history panel overlap
         .with_min_inner_size([900.0, 560.0])
-        .with_title("Local Inference")
+        .with_title("lin")
         // Wayland app id / X11 class: lets the desktop match the .desktop entry
         .with_app_id(APP_ID);
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {

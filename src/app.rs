@@ -707,7 +707,7 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             let rect = ui.max_rect();
-            draw_background(ui.painter(), rect, now as f32, self.settings.animations, !self.chat.messages.is_empty());
+            draw_background(ui.painter(), rect, now as f32, self.settings.animations);
             self.top_bar(ui, rect);
             if !self.view.show_history {
                 let btn = Rect::from_min_size(rect.min + Vec2::new(12.0, 12.0), Vec2::new(36.0, 30.0));

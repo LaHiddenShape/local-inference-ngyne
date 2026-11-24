@@ -102,14 +102,9 @@ impl App {
         let left = rect.center().x - panel_w / 2.0;
 
         if self.chat.messages.is_empty() {
-            ui.painter().text(
-                rect.center() - Vec2::new(0.0, 100.0),
-                Align2::CENTER_CENTER,
-                "what's on your mind?",
-                FontId::new(44.0, light_family()),
-                Color32::from_gray(235),
-            );
+            greeting(ui, rect.center() - Vec2::new(0.0, 100.0));
         } else {
+            ui.ctx().data_mut(|d| d.remove::<f64>(egui::Id::unique(GREETING_ID)));
             let hist = Rect::from_min_max(
                 Pos2::new(left, rect.top() + 64.0),
                 Pos2::new(left + panel_w, rect.bottom() - input_h - 40.0),
@@ -193,11 +188,14 @@ impl App {
                                             });
                                         });
                                 });
-                                if m.time > 0 {
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                                    if m.time > 0 {
                                         ui.label(RichText::new(fmt_time(m.time)).small().monospace().color(Color32::from_gray(110)));
-                                    });
-                                }
+                                    }
+                                    if !text.is_empty() && copy_icon(ui).on_hover_text("Copy the prompt").clicked() {
+                                        copy = Some(text.to_string());
+                                    }
+                                });
                             } else {
                                 // assistant: full-width block with a thin accent bar and model name
                                 let block = egui::Frame::new()
@@ -247,7 +245,7 @@ impl App {
                                             egui::Button::new(RichText::new(t).small().monospace().color(Color32::from_gray(130)))
                                                 .frame(false)
                                         };
-                                        if !answer.is_empty() && ui.add(small("copy")).on_hover_text("Copy the reply as Markdown").clicked() {
+                                        if !answer.is_empty() && copy_icon(ui).on_hover_text("Copy the reply as Markdown").clicked() {
                                             copy = Some(answer.to_string());
                                         }
                                         if i == n - 1 && !streaming && ui.add(small("regenerate")).on_hover_text("Ask again with the selected model").clicked() {
@@ -294,11 +292,16 @@ impl App {
         }
         let mut send = false;
         let mut stop = false;
-        // Enter sends, Shift+Enter inserts a newline
+        // Enter sends, Shift+Enter inserts a newline; while a reply streams,
+        // Enter in an empty box stops it
         if ui.memory(|m| m.has_focus(input_id))
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
         {
-            send = true;
+            if self.chat.streaming() && self.chat.input.trim().is_empty() && self.chat.pending.is_empty() {
+                stop = true;
+            } else {
+                send = true;
+            }
         }
         ui.scope_builder(egui::UiBuilder::new().max_rect(input_rect), |ui| {
             egui::Frame::new()
@@ -362,7 +365,7 @@ impl App {
                         self.context_gauge(ui);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if self.chat.streaming() {
-                                if ui.add(egui::Button::new("■ Stop").min_size(Vec2::new(64.0, 28.0))).on_hover_text("Esc").clicked() {
+                                if ui.add(egui::Button::new("■ Stop").min_size(Vec2::new(64.0, 28.0))).on_hover_text("Esc, or Enter in an empty box").clicked() {
                                     stop = true;
                                 }
                             } else {
@@ -577,6 +580,106 @@ fn fmt_time(secs: u64) -> String {
     } else {
         format!("{:02}/{:02}/{} {hm}", tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900)
     }
+}
+
+const GREETING_ID: &str = "greeting_start";
+
+/// "what's on your mind?" with a glitch look: the letters decode from random
+/// glyphs left to right, then the line keeps twitching now and then with a
+/// red/cyan channel split and jittered letters. Replayed each time the chat
+/// becomes empty.
+fn greeting(ui: &egui::Ui, center: Pos2) {
+    const TEXT: &str = "what's on your mind?";
+    const GLYPHS: &[u8] = b"!<>-_\\/[]{}=+*^?#$%&@01";
+    const DECODE: f64 = 0.06; // delay between two letters settling
+    const SCRAMBLE: f64 = 0.35; // how long a letter scrambles before settling
+    const TICK: f64 = 0.05; // how often a scrambled glyph changes
+    const BURST_EVERY: f64 = 3.2; // average time between glitch bursts
+    const BURST_LEN: f64 = 0.18;
+
+    let id = egui::Id::unique(GREETING_ID);
+    let now = ui.input(|i| i.time);
+    let start = ui.ctx().data_mut(|d| *d.get_temp_mut_or(id, now));
+    let t = now - start;
+    let tick = (t / TICK) as u64;
+
+    // a burst window, at a pseudo-random offset inside each period
+    let period = (t / BURST_EVERY) as u64;
+    let burst_at = BURST_EVERY * (period as f64 + 0.3 + 0.5 * unit(hash(period)));
+    let decoding = t < SCRAMBLE + TEXT.len() as f64 * DECODE;
+    let burst = !decoding && (burst_at..burst_at + BURST_LEN).contains(&t);
+
+    let font = FontId::new(44.0, light_family());
+    let color = Color32::from_gray(235);
+    let painter = ui.painter();
+    let full = painter.layout_no_wrap(TEXT.to_owned(), font.clone(), color);
+    let origin = center - full.size() / 2.0;
+
+    for (n, (i, ch)) in TEXT.char_indices().enumerate() {
+        if ch == ' ' {
+            continue;
+        }
+        let local = t - n as f64 * DECODE;
+        if local < 0.0 {
+            continue;
+        }
+        let seed = hash(tick ^ ((n as u64) << 32));
+        let mut glyph = ch;
+        let mut offset = Vec2::ZERO;
+        let mut split = 0.0;
+        if local < SCRAMBLE {
+            glyph = GLYPHS[(seed % GLYPHS.len() as u64) as usize] as char;
+        } else if burst && seed.is_multiple_of(3) {
+            offset = Vec2::new((unit(seed >> 8) as f32 - 0.5) * 14.0, (unit(seed >> 16) as f32 - 0.5) * 6.0);
+            split = 3.0;
+            if seed.is_multiple_of(7) {
+                glyph = GLYPHS[((seed >> 24) % GLYPHS.len() as u64) as usize] as char;
+            }
+        }
+        let x = painter.layout_no_wrap(TEXT[..i].to_owned(), font.clone(), color).size().x;
+        let pos = origin + Vec2::new(x, 0.0) + offset;
+        let decode_split = if local < SCRAMBLE { 2.0 } else { split };
+        if decode_split > 0.0 {
+            let s = Vec2::new(decode_split, 0.0);
+            painter.text(pos - s, Align2::LEFT_TOP, glyph, font.clone(), Color32::from_rgba_unmultiplied(255, 40, 80, 150));
+            painter.text(pos + s, Align2::LEFT_TOP, glyph, font.clone(), Color32::from_rgba_unmultiplied(40, 220, 255, 150));
+        }
+        painter.text(pos, Align2::LEFT_TOP, glyph, font.clone(), color);
+    }
+
+    if decoding || burst {
+        ui.ctx().request_repaint();
+    } else {
+        // sleep until the next burst
+        let next = if t < burst_at { burst_at } else { BURST_EVERY * (period + 1) as f64 + 0.3 * BURST_EVERY };
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64((next - t).max(0.01)));
+    }
+}
+
+fn hash(mut x: u64) -> u64 {
+    // splitmix64
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+fn unit(x: u64) -> f64 {
+    (x >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// A small "copy" icon (two stacked sheets), brighter on hover.
+fn copy_icon(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::click());
+    let color = if resp.hovered() { Color32::from_gray(220) } else { Color32::from_gray(130) };
+    let stroke = Stroke::new(1.2, color);
+    let c = rect.center();
+    let back = Rect::from_min_size(c + Vec2::new(-5.0, -5.0), Vec2::new(7.0, 8.0));
+    let front = back.translate(Vec2::new(3.0, 2.5));
+    ui.painter().rect_stroke(back, 0.0, stroke, egui::StrokeKind::Middle);
+    ui.painter().rect_filled(front, 0.0, Color32::from_rgb(11, 11, 13));
+    ui.painter().rect_stroke(front, 0.0, stroke, egui::StrokeKind::Middle);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 #[cfg(test)]

@@ -259,7 +259,7 @@ fn apply(dir: &Path, op: Op) -> io::Result<()> {
 #[serde(default)]
 pub struct Settings {
     pub last_model: Option<String>,
-    /// Animated pyramids and falcon in the background.
+    /// Animated pyramids in the background.
     pub animations: bool,
     /// Largest context window requested, in tokens (`None`: the model's maximum).
     pub max_context: Option<u64>,
